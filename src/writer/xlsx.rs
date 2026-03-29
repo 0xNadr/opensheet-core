@@ -143,6 +143,33 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                     let val = if *b { "1" } else { "0" };
                     write!(self.zip()?, "<c r=\"{cell_ref}\" t=\"b\"><v>{val}</v></c>")?;
                 }
+                CellValue::Formula {
+                    formula,
+                    cached_value,
+                } => {
+                    let escaped_formula = xml_escape(formula);
+                    match cached_value.as_deref() {
+                        Some(CellValue::Number(n)) => {
+                            write!(
+                                self.zip()?,
+                                "<c r=\"{cell_ref}\"><f>{escaped_formula}</f><v>{n}</v></c>"
+                            )?;
+                        }
+                        Some(CellValue::String(s)) => {
+                            let escaped_val = xml_escape(s);
+                            write!(
+                                self.zip()?,
+                                "<c r=\"{cell_ref}\" t=\"str\"><f>{escaped_formula}</f><v>{escaped_val}</v></c>"
+                            )?;
+                        }
+                        _ => {
+                            write!(
+                                self.zip()?,
+                                "<c r=\"{cell_ref}\"><f>{escaped_formula}</f></c>"
+                            )?;
+                        }
+                    }
+                }
                 CellValue::Empty => {}
             }
         }

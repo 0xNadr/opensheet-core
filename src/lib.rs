@@ -22,6 +22,20 @@ fn cell_to_py(py: Python<'_>, cell: &CellValue) -> PyResult<Py<PyAny>> {
             }
         }
         CellValue::Bool(b) => Ok(b.into_pyobject(py)?.to_owned().into_any().unbind()),
+        CellValue::Formula {
+            formula,
+            cached_value,
+        } => {
+            let cached_py = match cached_value {
+                Some(v) => Some(cell_to_py(py, v)?),
+                None => None,
+            };
+            let f = Formula {
+                formula: formula.clone(),
+                cached_value: cached_py,
+            };
+            Ok(f.into_pyobject(py)?.into_any().unbind())
+        }
         CellValue::Empty => Ok(PyNone::get(py).to_owned().into_any().unbind()),
     }
 }
@@ -43,6 +57,20 @@ fn rows_to_py(py: Python<'_>, rows: &[Vec<CellValue>]) -> PyResult<Py<PyAny>> {
 fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
     if obj.is_none() {
         CellValue::Empty
+    } else if let Ok(f) = obj.extract::<PyRef<'_, Formula>>() {
+        let py = obj.py();
+        let cached = f.cached_value.as_ref().and_then(|v| {
+            let bound = v.bind(py);
+            if bound.is_none() {
+                None
+            } else {
+                Some(Box::new(py_to_cell(bound)))
+            }
+        });
+        CellValue::Formula {
+            formula: f.formula.clone(),
+            cached_value: cached,
+        }
     } else if let Ok(b) = obj.cast::<PyBool>() {
         CellValue::Bool(b.is_true())
     } else if let Ok(i) = obj.cast::<PyInt>() {
@@ -134,6 +162,39 @@ fn sheet_names(path: &str) -> PyResult<Vec<String>> {
     Ok(sheets.iter().map(|s| s.name.clone()).collect())
 }
 
+/// A spreadsheet formula with optional cached value.
+///
+/// Usage:
+///     from opensheet_core import Formula
+///     f = Formula("SUM(A1:A10)")
+///     f = Formula("A1+B1", cached_value=42)
+#[pyclass(skip_from_py_object)]
+struct Formula {
+    #[pyo3(get, set)]
+    formula: String,
+    #[pyo3(get, set)]
+    cached_value: Option<Py<PyAny>>,
+}
+
+#[pymethods]
+impl Formula {
+    #[new]
+    #[pyo3(signature = (formula, cached_value=None))]
+    fn new(formula: String, cached_value: Option<Py<PyAny>>) -> Self {
+        Formula {
+            formula,
+            cached_value,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.cached_value {
+            Some(_) => format!("Formula('{}', cached_value=...)", self.formula),
+            None => format!("Formula('{}')", self.formula),
+        }
+    }
+}
+
 /// Streaming XLSX writer.
 ///
 /// Usage:
@@ -218,5 +279,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_sheet, m)?)?;
     m.add_function(wrap_pyfunction!(sheet_names, m)?)?;
     m.add_class::<XlsxWriter>()?;
+    m.add_class::<Formula>()?;
     Ok(())
 }

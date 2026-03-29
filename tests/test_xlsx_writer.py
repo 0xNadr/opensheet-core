@@ -120,3 +120,46 @@ def test_large_write(tmp_xlsx):
     assert len(rows) == 10000
     assert rows[0] == ["row_0", 0, 0.0]
     assert rows[9999][0] == "row_9999"
+
+
+def test_formula_write_and_read(tmp_xlsx):
+    """Write formulas and verify they round-trip."""
+    from opensheet_core import Formula
+
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Formulas")
+        w.write_row(["A", "B", "Sum"])
+        w.write_row([10, 20, Formula("A2+B2", cached_value=30)])
+        w.write_row([5, 15, Formula("A3+B3")])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    rows = sheets[0]["rows"]
+
+    assert rows[0] == ["A", "B", "Sum"]
+    # Row with formula + cached value
+    assert rows[1][0] == 10
+    assert rows[1][1] == 20
+    f1 = rows[1][2]
+    assert isinstance(f1, Formula)
+    assert f1.formula == "A2+B2"
+    assert f1.cached_value == 30
+
+    # Row with formula, no cached value
+    f2 = rows[2][2]
+    assert isinstance(f2, Formula)
+    assert f2.formula == "A3+B3"
+    assert f2.cached_value is None
+
+
+def test_formula_class():
+    """Test Formula class creation and attributes."""
+    from opensheet_core import Formula
+
+    f = Formula("SUM(A1:A10)")
+    assert f.formula == "SUM(A1:A10)"
+    assert f.cached_value is None
+    assert "SUM(A1:A10)" in repr(f)
+
+    f2 = Formula("A1*2", cached_value=42)
+    assert f2.formula == "A1*2"
+    assert f2.cached_value == 42

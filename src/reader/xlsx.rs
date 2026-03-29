@@ -271,8 +271,10 @@ fn parse_worksheet<R: Read + Seek>(
     let mut cell_type = String::new();
     let mut in_cell = false;
     let mut in_value = false;
+    let mut in_formula = false;
     let mut in_inline_str = false;
     let mut cell_value_text = String::new();
+    let mut cell_formula_text = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -297,6 +299,7 @@ fn parse_worksheet<R: Read + Seek>(
                         in_cell = true;
                         cell_type.clear();
                         cell_value_text.clear();
+                        cell_formula_text.clear();
 
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
@@ -316,6 +319,10 @@ fn parse_worksheet<R: Read + Seek>(
                         in_value = true;
                         cell_value_text.clear();
                     }
+                    b"f" if in_cell => {
+                        in_formula = true;
+                        cell_formula_text.clear();
+                    }
                     b"is" if in_cell => {
                         in_inline_str = true;
                     }
@@ -330,8 +337,24 @@ fn parse_worksheet<R: Read + Seek>(
                 match e.name().as_ref() {
                     b"c" => {
                         if in_cell {
-                            let value =
-                                resolve_cell_value(&cell_type, &cell_value_text, shared_strings);
+                            let value = if !cell_formula_text.is_empty() {
+                                // Cell has a formula
+                                let cached = resolve_cell_value(
+                                    &cell_type,
+                                    &cell_value_text,
+                                    shared_strings,
+                                );
+                                let cached_value = match cached {
+                                    CellValue::Empty => None,
+                                    other => Some(Box::new(other)),
+                                };
+                                CellValue::Formula {
+                                    formula: std::mem::take(&mut cell_formula_text),
+                                    cached_value,
+                                }
+                            } else {
+                                resolve_cell_value(&cell_type, &cell_value_text, shared_strings)
+                            };
 
                             // Ensure the row has enough columns
                             if let Some(row) = rows.get_mut(current_row) {
@@ -348,6 +371,9 @@ fn parse_worksheet<R: Read + Seek>(
                     b"v" => {
                         in_value = false;
                     }
+                    b"f" => {
+                        in_formula = false;
+                    }
                     b"t" if in_inline_str => {
                         in_value = false;
                     }
@@ -356,6 +382,10 @@ fn parse_worksheet<R: Read + Seek>(
                     }
                     _ => {}
                 }
+            }
+            Ok(Event::Text(ref e)) if in_formula => {
+                let text = e.unescape().unwrap_or_default();
+                cell_formula_text.push_str(&text);
             }
             Ok(Event::Text(ref e)) if in_value => {
                 let text = e.unescape().unwrap_or_default();

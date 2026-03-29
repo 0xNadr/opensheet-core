@@ -4,6 +4,11 @@ pub enum CellValue {
     String(std::string::String),
     Number(f64),
     Bool(bool),
+    /// A formula with its text and optional cached value.
+    Formula {
+        formula: std::string::String,
+        cached_value: Option<Box<CellValue>>,
+    },
     Empty,
 }
 
