@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/0xNadr/opensheet-core/actions/workflows/ci.yml"><img src="https://github.com/0xNadr/opensheet-core/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/opensheet-core/"><img src="https://img.shields.io/pypi/v/opensheet-core.svg" alt="PyPI"></a>
   <a href="https://github.com/0xNadr/opensheet-core/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9%E2%80%933.13-blue.svg" alt="Python 3.9–3.13"></a>
 </p>
@@ -28,7 +29,8 @@ Existing Python spreadsheet libraries force you to choose between performance, m
 
 - **Streaming XLSX reader** — row-by-row iteration without loading the entire file into memory
 - **Streaming XLSX writer** — write millions of rows with constant memory usage
-- **Typed cell extraction** — strings, numbers, booleans, and empty cells are returned as native Python types
+- **Formula support** — read and write formulas with optional cached values
+- **Typed cell extraction** — strings, numbers, booleans, formulas, and empty cells are returned as native Python types
 - **Context manager support** — Pythonic `with` statement for safe resource management
 - **Cross-platform** — tested on Linux, macOS, and Windows across Python 3.9–3.13
 - **Zero Python dependencies** — single native extension, no dependency tree to manage
@@ -46,6 +48,10 @@ Benchmarked against [openpyxl](https://openpyxl.readthedocs.io/) on a 100,000-ro
 
 ## Installation
 
+```bash
+pip install opensheet-core
+```
+
 ### From source (requires Rust toolchain)
 
 ```bash
@@ -55,21 +61,22 @@ cd opensheet-core
 maturin develop --release
 ```
 
-> Prebuilt wheels on PyPI are coming soon.
-
 ## Quick Start
 
 ### Reading an XLSX file
 
 ```python
-from opensheet_core import read_xlsx
+from opensheet_core import read_xlsx, read_sheet
 
-workbook = read_xlsx("report.xlsx")
-
-for sheet_name, rows in workbook:
-    print(f"Sheet: {sheet_name}")
-    for row in rows:
+# Read all sheets
+sheets = read_xlsx("report.xlsx")
+for sheet in sheets:
+    print(f"Sheet: {sheet['name']}")
+    for row in sheet["rows"]:
         print(row)  # List of typed Python values
+
+# Read a specific sheet
+rows = read_sheet("report.xlsx", sheet_name="Data")
 ```
 
 ### Writing an XLSX file
@@ -84,11 +91,32 @@ with XlsxWriter("output.xlsx") as writer:
     writer.write_row(["Bob", 25, False])
 ```
 
+### Writing formulas
+
+```python
+from opensheet_core import XlsxWriter, Formula
+
+with XlsxWriter("output.xlsx") as writer:
+    writer.add_sheet("Budget")
+    writer.write_row(["Item", "Cost"])
+    writer.write_row(["Rent", 1200])
+    writer.write_row(["Food", 400])
+    writer.write_row(["Total", Formula("SUM(B2:B3)", cached_value=1600)])
+```
+
 ## API Reference
 
-### `read_xlsx(path: str) -> list[tuple[str, list[list]]]`
+### `read_xlsx(path: str) -> list[dict]`
 
-Reads an XLSX file and returns a list of `(sheet_name, rows)` tuples. Each row is a list of typed Python values (`str`, `float`, `bool`, or `None`).
+Reads an XLSX file and returns a list of dicts with `"name"` (str) and `"rows"` (list of lists). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `Formula`, or `None`).
+
+### `read_sheet(path, sheet_name=None, sheet_index=None) -> list[list]`
+
+Reads a single sheet by name or index. Returns the first sheet by default.
+
+### `sheet_names(path: str) -> list[str]`
+
+Returns the list of sheet names in a workbook.
 
 ### `XlsxWriter(path: str)`
 
@@ -98,6 +126,11 @@ Streaming XLSX writer. Use as a context manager.
 |--------|-------------|
 | `add_sheet(name: str)` | Create a new worksheet |
 | `write_row(values: list)` | Write a row of values to the current sheet |
+| `close()` | Finalize and close the file |
+
+### `Formula(formula: str, cached_value=None)`
+
+Represents a spreadsheet formula. Pass as a cell value when writing, and received when reading cells that contain formulas.
 
 ## Architecture
 
@@ -119,18 +152,19 @@ Streaming XLSX writer. Use as a context manager.
 
 - [x] XLSX reading with typed cell extraction
 - [x] Streaming XLSX writing with low memory usage
+- [x] Formula read/write support
 - [x] Python bindings via PyO3
 - [x] CI across Linux, macOS, Windows (Python 3.9–3.13)
 - [x] Benchmarks vs openpyxl
-- [ ] Prebuilt wheels on PyPI
-- [ ] Formula writing support
+- [x] Prebuilt wheels on PyPI
 - [ ] Merged cell metadata
 - [ ] Basic cell styling
+- [ ] Date/time cell support
 - [ ] Broader test corpus & fuzzing
 
 ## Project Status
 
-**Working prototype** — functional reader and writer with 22 passing tests. The API may change before 1.0.
+**v0.2.0** — functional reader and writer with formula support, 24 passing tests, and prebuilt wheels on PyPI. The API may change before 1.0.
 
 ## Contributing
 
