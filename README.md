@@ -252,6 +252,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 - [x] CI across Linux, macOS, Windows (Python 3.9–3.13)
 - [x] Prebuilt wheels on PyPI
 - [x] Benchmarks vs openpyxl
+- [x] Runnable benchmark script (`python benchmarks/benchmark.py`)
 - [x] Zero Python dependencies
 
 ### Phase 1 — Core usability (next)
