@@ -30,7 +30,8 @@ Existing Python spreadsheet libraries force you to choose between performance, m
 - **Streaming XLSX reader** — row-by-row iteration without loading the entire file into memory
 - **Streaming XLSX writer** — write millions of rows with constant memory usage
 - **Formula support** — read and write formulas with optional cached values
-- **Typed cell extraction** — strings, numbers, booleans, formulas, and empty cells are returned as native Python types
+- **Date/time support** — read and write `datetime.date` and `datetime.datetime` cells with automatic Excel serial number conversion
+- **Typed cell extraction** — strings, numbers, booleans, dates, datetimes, formulas, and empty cells are returned as native Python types
 - **Context manager support** — Pythonic `with` statement for safe resource management
 - **Cross-platform** — tested on Linux, macOS, and Windows across Python 3.9–3.13
 - **Zero Python dependencies** — single native extension, no dependency tree to manage
@@ -91,6 +92,18 @@ with XlsxWriter("output.xlsx") as writer:
     writer.write_row(["Bob", 25, False])
 ```
 
+### Writing dates
+
+```python
+import datetime
+from opensheet_core import XlsxWriter
+
+with XlsxWriter("output.xlsx") as writer:
+    writer.add_sheet("Events")
+    writer.write_row(["Event", "Date", "Timestamp"])
+    writer.write_row(["Launch", datetime.date(2025, 3, 15), datetime.datetime(2025, 3, 15, 14, 30)])
+```
+
 ### Writing formulas
 
 ```python
@@ -108,7 +121,7 @@ with XlsxWriter("output.xlsx") as writer:
 
 ### `read_xlsx(path: str) -> list[dict]`
 
-Reads an XLSX file and returns a list of dicts with `"name"` (str) and `"rows"` (list of lists). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `Formula`, or `None`).
+Reads an XLSX file and returns a list of dicts with `"name"` (str) and `"rows"` (list of lists). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `datetime.date`, `datetime.datetime`, `Formula`, or `None`).
 
 ### `read_sheet(path, sheet_name=None, sheet_index=None) -> list[list]`
 
@@ -157,14 +170,14 @@ Represents a spreadsheet formula. Pass as a cell value when writing, and receive
 - [x] CI across Linux, macOS, Windows (Python 3.9–3.13)
 - [x] Benchmarks vs openpyxl
 - [x] Prebuilt wheels on PyPI
+- [x] Date/time cell support
 - [ ] Merged cell metadata
 - [ ] Basic cell styling
-- [ ] Date/time cell support
 - [ ] Broader test corpus & fuzzing
 
 ## Project Status
 
-**v0.1.0** — functional reader and writer with formula support, 24 passing tests, and prebuilt wheels on PyPI. The API may change before 1.0.
+**v0.1.0** — functional reader and writer with formula and date/time support, 28 passing tests, and prebuilt wheels on PyPI. The API may change before 1.0.
 
 ## Contributing
 
