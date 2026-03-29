@@ -99,7 +99,9 @@ fn parse_workbook_rels<R: Read + Seek>(
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) if e.name().as_ref() == b"Relationship" => {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.name().as_ref() == b"Relationship" =>
+            {
                 let mut id = String::new();
                 let mut target = String::new();
 
@@ -113,8 +115,8 @@ fn parse_workbook_rels<R: Read + Seek>(
 
                 if !id.is_empty() && !target.is_empty() {
                     // Targets are relative to xl/
-                    let full_path = if target.starts_with('/') {
-                        target[1..].to_string()
+                    let full_path = if let Some(stripped) = target.strip_prefix('/') {
+                        stripped.to_string()
                     } else {
                         format!("xl/{target}")
                     };
@@ -191,30 +193,26 @@ fn parse_shared_strings<R: Read + Seek>(
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                match e.name().as_ref() {
-                    b"si" => {
-                        in_si = true;
-                        current_string.clear();
-                    }
-                    b"t" if in_si => {
-                        in_t = true;
-                    }
-                    _ => {}
+            Ok(Event::Start(ref e)) => match e.name().as_ref() {
+                b"si" => {
+                    in_si = true;
+                    current_string.clear();
                 }
-            }
-            Ok(Event::End(ref e)) => {
-                match e.name().as_ref() {
-                    b"si" => {
-                        in_si = false;
-                        strings.push(std::mem::take(&mut current_string));
-                    }
-                    b"t" => {
-                        in_t = false;
-                    }
-                    _ => {}
+                b"t" if in_si => {
+                    in_t = true;
                 }
-            }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) => match e.name().as_ref() {
+                b"si" => {
+                    in_si = false;
+                    strings.push(std::mem::take(&mut current_string));
+                }
+                b"t" => {
+                    in_t = false;
+                }
+                _ => {}
+            },
             Ok(Event::Text(ref e)) if in_t => {
                 let text = e.unescape().unwrap_or_default();
                 current_string.push_str(&text);
@@ -239,7 +237,11 @@ fn col_to_index(col_ref: &str) -> usize {
             break;
         }
     }
-    if index == 0 { 0 } else { index - 1 }
+    if index == 0 {
+        0
+    } else {
+        index - 1
+    }
 }
 
 /// Parse a cell reference like "A1" and return (row_0based, col_0based).
@@ -328,11 +330,8 @@ fn parse_worksheet<R: Read + Seek>(
                 match e.name().as_ref() {
                     b"c" => {
                         if in_cell {
-                            let value = resolve_cell_value(
-                                &cell_type,
-                                &cell_value_text,
-                                shared_strings,
-                            );
+                            let value =
+                                resolve_cell_value(&cell_type, &cell_value_text, shared_strings);
 
                             // Ensure the row has enough columns
                             if let Some(row) = rows.get_mut(current_row) {
@@ -449,6 +448,9 @@ mod tests {
             _ => panic!("expected bool"),
         }
 
-        assert!(matches!(resolve_cell_value("", "", &shared), CellValue::Empty));
+        assert!(matches!(
+            resolve_cell_value("", "", &shared),
+            CellValue::Empty
+        ));
     }
 }

@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyDict, PyNone, PyString};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyNone, PyString};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
@@ -105,12 +105,9 @@ fn read_sheet(
     let sheets = reader::xlsx::read_xlsx(reader)?;
 
     let sheet = if let Some(name) = sheet_name {
-        sheets
-            .iter()
-            .find(|s| s.name == name)
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(format!("Sheet '{name}' not found"))
-            })?
+        sheets.iter().find(|s| s.name == name).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!("Sheet '{name}' not found"))
+        })?
     } else if let Some(idx) = sheet_index {
         sheets.get(idx).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(format!(
@@ -119,9 +116,9 @@ fn read_sheet(
             ))
         })?
     } else {
-        sheets.first().ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err("No sheets found in file")
-        })?
+        sheets
+            .first()
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("No sheets found in file"))?
     };
 
     rows_to_py(py, &sheet.rows)
@@ -164,9 +161,10 @@ impl XlsxWriter {
 
     /// Add a new sheet to the workbook.
     fn add_sheet(&mut self, name: &str) -> PyResult<()> {
-        let w = self.inner.as_mut().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed")
-        })?;
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
         w.add_sheet(name)?;
         Ok(())
     }
@@ -175,9 +173,10 @@ impl XlsxWriter {
     ///
     /// Values can be: str, int, float, bool, or None.
     fn write_row(&mut self, row: &Bound<'_, PyList>) -> PyResult<()> {
-        let w = self.inner.as_mut().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed")
-        })?;
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
 
         let cells: Vec<CellValue> = row.iter().map(|item| py_to_cell(&item)).collect();
         w.write_row(&cells)?;
@@ -186,9 +185,10 @@ impl XlsxWriter {
 
     /// Close the writer and finalize the XLSX file.
     fn close(&mut self) -> PyResult<()> {
-        let w = self.inner.take().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed")
-        })?;
+        let w = self
+            .inner
+            .take()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
         w.close()?;
         Ok(())
     }

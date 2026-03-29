@@ -154,38 +154,39 @@ This may change as the prototype develops, but the main intention is to keep the
 
 ## Status
 
-Early project planning / prototype stage.
+Working prototype with XLSX reader and streaming writer.
 
-This repository is currently being prepared for initial implementation. The current focus is:
+Completed:
 
-- scope definition
-- roadmap refinement
-- packaging design
-- test corpus planning
-- milestone planning for an initial public prototype
+- XLSX reading with typed cell extraction (strings, numbers, booleans, empty cells)
+- streaming XLSX writing with low memory usage
+- Python bindings via PyO3
+- pip-installable with maturin (prebuilt wheels via CI planned)
+- 22 passing tests
+- benchmarks showing 2.5-2.7x faster than openpyxl with up to 300x less memory on writes
+
+Current focus:
+
+- CI with prebuilt wheels for Linux, macOS, and Windows
+- broader test corpus
+- formula writing support
 
 ## Installation
 
-Not yet available.
-
-The long-term goal is a normal installation flow such as:
+From source (requires Rust toolchain):
 
 ```bash
-pip install opensheet-core
-````
+pip install maturin
+git clone https://github.com/user/opensheet-core.git
+cd opensheet-core
+maturin develop
+```
 
-with prebuilt wheels for major platforms so that ordinary users do not need to compile from source.
+Prebuilt wheels on PyPI are planned once CI is set up.
 
 ## Development status
 
-The project is not production-ready yet.
-
-Until the first prototype is published, everything should be treated as exploratory and subject to change, including:
-
-* API design
-* supported formats
-* internal architecture
-* milestone ordering
+The project has a working prototype but is not production-ready yet. The API may still change.
 
 ## Contributing
 

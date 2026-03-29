@@ -71,9 +71,9 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
 
     /// Get a mutable reference to the inner ZipWriter, or error if closed.
     fn zip(&mut self) -> Result<&mut ZipWriter<W>, XlsxWriteError> {
-        self.zip.as_mut().ok_or_else(|| {
-            XlsxWriteError::InvalidState("Writer is already closed".to_string())
-        })
+        self.zip
+            .as_mut()
+            .ok_or_else(|| XlsxWriteError::InvalidState("Writer is already closed".to_string()))
     }
 
     /// Add a new sheet. If a sheet is currently open, it will be closed first.
@@ -93,8 +93,8 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
 
         // Start the worksheet XML file in the ZIP
         let path = format!("xl/worksheets/sheet{index}.xml");
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         self.zip()?.start_file(path, options)?;
 
         // Write worksheet XML header
@@ -180,8 +180,8 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             self.close_sheet()?;
         }
 
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         // Write [Content_Types].xml
         self.zip()?.start_file("[Content_Types].xml", options)?;
@@ -234,7 +234,8 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         write!(self.zip()?, "</sheets></workbook>")?;
 
         // Write xl/_rels/workbook.xml.rels
-        self.zip()?.start_file("xl/_rels/workbook.xml.rels", options)?;
+        self.zip()?
+            .start_file("xl/_rels/workbook.xml.rels", options)?;
         write!(
             self.zip()?,
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
