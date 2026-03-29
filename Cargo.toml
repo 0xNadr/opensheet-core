@@ -15,5 +15,5 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 pyo3 = "0.28"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 quick-xml = "0.37"
