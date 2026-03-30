@@ -418,12 +418,10 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
                                     String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
                             }
                             b"fontId" => {
-                                font_id =
-                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                                font_id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
                             }
                             b"fillId" => {
-                                fill_id =
-                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                                fill_id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
                             }
                             b"borderId" => {
                                 border_id =
@@ -468,8 +466,7 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
                 b"sz" if in_font => {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"val" {
-                            current_font.size =
-                                String::from_utf8_lossy(&attr.value).parse().ok();
+                            current_font.size = String::from_utf8_lossy(&attr.value).parse().ok();
                         }
                     }
                 }
@@ -544,8 +541,7 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
                 b"color" if current_border_side > 0 => {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"rgb" {
-                            let color =
-                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                            let color = Some(String::from_utf8_lossy(&attr.value).to_string());
                             match current_border_side {
                                 1 => current_border.left.color = color,
                                 2 => current_border.right.color = color,
@@ -571,8 +567,7 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
                                         Some(String::from_utf8_lossy(&attr.value).to_string());
                                 }
                                 b"wrapText" => {
-                                    align.wrap_text =
-                                        String::from_utf8_lossy(&attr.value) == "1";
+                                    align.wrap_text = String::from_utf8_lossy(&attr.value) == "1";
                                 }
                                 b"textRotation" => {
                                     align.text_rotation =
@@ -597,12 +592,10 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
                                     String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
                             }
                             b"fontId" => {
-                                font_id =
-                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                                font_id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
                             }
                             b"fillId" => {
-                                fill_id =
-                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                                fill_id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
                             }
                             b"borderId" => {
                                 border_id =
@@ -708,71 +701,68 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
 
             let has_alignment = xf.alignment.is_some();
 
-            let cell_style = if has_font_styling
-                || has_fill_styling
-                || has_border_styling
-                || has_alignment
-            {
-                let f = font.unwrap_or(&default_font);
-                let mut style = CellStyle::default();
+            let cell_style =
+                if has_font_styling || has_fill_styling || has_border_styling || has_alignment {
+                    let f = font.unwrap_or(&default_font);
+                    let mut style = CellStyle::default();
 
-                // Font
-                if has_font_styling {
-                    style.bold = f.bold;
-                    style.italic = f.italic;
-                    style.underline = f.underline;
-                    if f.name.as_deref() != Some("Calibri") {
-                        style.font_name = f.name.clone();
+                    // Font
+                    if has_font_styling {
+                        style.bold = f.bold;
+                        style.italic = f.italic;
+                        style.underline = f.underline;
+                        if f.name.as_deref() != Some("Calibri") {
+                            style.font_name = f.name.clone();
+                        }
+                        if f.size != Some(11.0) {
+                            style.font_size = f.size;
+                        }
+                        style.font_color = f.color.clone();
                     }
-                    if f.size != Some(11.0) {
-                        style.font_size = f.size;
+
+                    // Fill
+                    if has_fill_styling {
+                        if let Some(fl) = fill {
+                            style.fill_color = fl.fg_color.clone();
+                        }
                     }
-                    style.font_color = f.color.clone();
-                }
 
-                // Fill
-                if has_fill_styling {
-                    if let Some(fl) = fill {
-                        style.fill_color = fl.fg_color.clone();
+                    // Border
+                    if has_border_styling {
+                        if let Some(b) = border {
+                            style.border_left = b.left.style.clone();
+                            style.border_right = b.right.style.clone();
+                            style.border_top = b.top.style.clone();
+                            style.border_bottom = b.bottom.style.clone();
+                            // Use the first non-None border color as the shared color
+                            let first_color = b
+                                .left
+                                .color
+                                .as_ref()
+                                .or(b.right.color.as_ref())
+                                .or(b.top.color.as_ref())
+                                .or(b.bottom.color.as_ref());
+                            style.border_color = first_color.cloned();
+                        }
                     }
-                }
 
-                // Border
-                if has_border_styling {
-                    if let Some(b) = border {
-                        style.border_left = b.left.style.clone();
-                        style.border_right = b.right.style.clone();
-                        style.border_top = b.top.style.clone();
-                        style.border_bottom = b.bottom.style.clone();
-                        // Use the first non-None border color as the shared color
-                        let first_color = b
-                            .left
-                            .color
-                            .as_ref()
-                            .or(b.right.color.as_ref())
-                            .or(b.top.color.as_ref())
-                            .or(b.bottom.color.as_ref());
-                        style.border_color = first_color.cloned();
+                    // Alignment
+                    if let Some(ref align) = xf.alignment {
+                        style.horizontal_alignment = align.horizontal.clone();
+                        style.vertical_alignment = align.vertical.clone();
+                        style.wrap_text = align.wrap_text;
+                        style.text_rotation = align.text_rotation;
                     }
-                }
 
-                // Alignment
-                if let Some(ref align) = xf.alignment {
-                    style.horizontal_alignment = align.horizontal.clone();
-                    style.vertical_alignment = align.vertical.clone();
-                    style.wrap_text = align.wrap_text;
-                    style.text_rotation = align.text_rotation;
-                }
+                    // Number format (include in style if there's also visual styling)
+                    if format_code.is_some() {
+                        style.number_format = format_code.clone();
+                    }
 
-                // Number format (include in style if there's also visual styling)
-                if format_code.is_some() {
-                    style.number_format = format_code.clone();
-                }
-
-                Some(style)
-            } else {
-                None
-            };
+                    Some(style)
+                } else {
+                    None
+                };
 
             StyleInfo {
                 is_date,
@@ -1088,8 +1078,7 @@ fn parse_worksheet<R: Read + Seek>(
                             let style_info = styles.get(cell_style);
                             let is_date = style_info.map(|s| s.is_date).unwrap_or(false);
                             let format_code = style_info.and_then(|s| s.format_code.clone());
-                            let cell_style_data =
-                                style_info.and_then(|s| s.cell_style.clone());
+                            let cell_style_data = style_info.and_then(|s| s.cell_style.clone());
 
                             // If style has visual styling, don't pass format_code
                             // to resolve — it's captured in the CellStyle instead

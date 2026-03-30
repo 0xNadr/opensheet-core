@@ -361,8 +361,7 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                             style.number_format = Some("yyyy\\-mm\\-dd".to_string());
                         }
                         CellValue::DateTime { .. } if style.number_format.is_none() => {
-                            style.number_format =
-                                Some("yyyy\\-mm\\-dd\\ hh:mm:ss".to_string());
+                            style.number_format = Some("yyyy\\-mm\\-dd\\ hh:mm:ss".to_string());
                         }
                         _ => {}
                     }
@@ -399,10 +398,7 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                 )?;
             }
             CellValue::Number(n) => {
-                write!(
-                    self.zip()?,
-                    "<c r=\"{cell_ref}\"{s_attr}><v>{n}</v></c>"
-                )?;
+                write!(self.zip()?, "<c r=\"{cell_ref}\"{s_attr}><v>{n}</v></c>")?;
             }
             CellValue::Bool(b) => {
                 let val = if *b { "1" } else { "0" };
@@ -936,7 +932,10 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             write!(
                 self.zip()?,
                 "<xf numFmtId=\"{}\" fontId=\"{}\" fillId=\"{}\" borderId=\"{}\" xfId=\"0\"",
-                xf.num_fmt_id, xf.font_id, xf.fill_id, xf.border_id
+                xf.num_fmt_id,
+                xf.font_id,
+                xf.fill_id,
+                xf.border_id
             )?;
             if xf.num_fmt_id != 0 {
                 write!(self.zip()?, " applyNumberFormat=\"1\"")?;
@@ -1492,10 +1491,7 @@ mod tests {
                     CellValue::String(s) => assert_eq!(s, "Centered"),
                     other => panic!("expected String inside StyledCell, got {other:?}"),
                 }
-                assert_eq!(
-                    style.horizontal_alignment.as_deref(),
-                    Some("center")
-                );
+                assert_eq!(style.horizontal_alignment.as_deref(), Some("center"));
                 assert_eq!(style.vertical_alignment.as_deref(), Some("top"));
                 assert!(style.wrap_text);
             }
