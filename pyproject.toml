@@ -42,7 +42,8 @@ Issues = "https://github.com/0xNadr/opensheet-core/issues"
 Changelog = "https://github.com/0xNadr/opensheet-core/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "openpyxl"]
+pandas = ["pandas>=1.5"]
+dev = ["pytest", "pytest-cov", "openpyxl", "pandas"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
