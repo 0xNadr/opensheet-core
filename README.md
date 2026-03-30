@@ -47,14 +47,18 @@ Existing Python spreadsheet libraries force you to choose between performance, m
 
 ## Benchmarks
 
-Benchmarked against [openpyxl](https://openpyxl.readthedocs.io/) 3.1.5 on a 100,000-row x 10-column dataset (1M cells):
+Benchmarked against [openpyxl](https://openpyxl.readthedocs.io/) 3.1.5 on a 100,000-row x 10-column dataset (1M cells), 5 interleaved runs, current RSS measurement (not high-water mark):
 
-| Operation | OpenSheet Core | openpyxl | Speedup | Memory |
-|-----------|---------------|----------|---------|--------|
-| **Write** | 2.3s | 20.8s | **9x faster** | **~300x less** |
-| **Read** | 0.46s | 14.3s | **31x faster** | — |
+| Operation | OpenSheet Core | openpyxl | Speedup | Memory (RSS delta) |
+|-----------|---------------|----------|---------|---------------------|
+| **Write** | 2.4s | 3.7s | **1.5x faster** | **1.9x less** (1.1 MB vs 2.2 MB) |
+| **Read** | 251ms | 3.4s | **13x faster** | 2.6x more (18 MB vs 7 MB) |
+
+OpenSheet Core's read speed advantage comes from its Rust streaming parser. The higher read memory reflects loading all rows into Python objects at once — a tradeoff for the simpler `read_sheet()` API. Write memory is lower because the Rust writer streams data directly to disk.
 
 > Run it yourself: `python benchmarks/benchmark.py`
+>
+> See the [Benchmarking Methodology](docs/benchmarking.md) doc for details on how we measure and avoid common benchmarking pitfalls.
 
 ## Installation
 
@@ -305,11 +309,14 @@ OpenSheet Core is designed to be a faster, memory-efficient alternative to openp
 
 | | OpenSheet Core | openpyxl |
 |---|---|---|
-| **Write 1M cells** | ~0.7s | ~1.8s |
-| **Read 1M cells** | ~0.9s | ~2.4s |
-| **Memory usage** | Constant (streaming) | ~50x file size |
+| **Write 1M cells** | ~2.4s | ~3.7s |
+| **Read 1M cells** | ~0.25s | ~3.4s |
+| **Write memory** | 1.1 MB RSS delta | 2.2 MB RSS delta |
+| **Read memory** | 18 MB RSS delta | 7 MB RSS delta |
 | **Python dependencies** | Zero | Several |
 | **Architecture** | Rust streaming core | Pure Python DOM |
+
+> Note: Read memory is higher because `read_sheet()` materializes all rows into Python lists. A future streaming iterator API will bring constant-memory reads.
 
 ### Feature coverage
 
@@ -418,6 +425,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 
 - [ ] Migration guide: openpyxl → opensheet-core (side-by-side code comparisons)
 - [ ] FastAPI/Flask streaming XLSX download examples
+- [x] Benchmark methodology documentation
 - [ ] Dedicated benchmark page with chart visualizations
 
 ## Project Status

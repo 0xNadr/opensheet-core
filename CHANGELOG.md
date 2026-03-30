@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Fix benchmark measurement bias: replace `ru_maxrss` (high-water mark) with current RSS via platform-specific APIs (`proc_pidinfo` on macOS, `/proc/self/statm` on Linux)
+- Interleave benchmark runs (`[A,B,A,B,...]` instead of `[A,A,A,B,B,B]`) to eliminate ordering bias
+- Increase default benchmark runs from 3 to 5 for more stable results
+- Report mean +/- stddev alongside min time and median memory
+- Update README benchmark numbers to reflect accurate, unbiased measurements
+- Add benchmarking methodology documentation (`docs/benchmarking.md`)
+
 ## [0.2.0] - 2026-03-30
 
 ### Added

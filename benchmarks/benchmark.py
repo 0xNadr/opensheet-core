@@ -23,7 +23,7 @@ except ImportError:
 
 import opensheet_core
 
-from bench_utils import bench, format_bytes, format_time, generate_row
+from bench_utils import bench_pair, format_bytes, format_time, generate_row
 
 
 COLS = 10
@@ -84,16 +84,43 @@ def format_memory_relative(os_mem, op_mem):
     return f"{1 / ratio:.1f}x more memory"
 
 
-def print_comparison(label, os_time, os_mem, op_time, op_mem):
-    speedup = op_time / os_time if os_time > 0 else float("inf")
+def format_time_with_std(result):
+    """Format min time with mean +/- stddev."""
+    base = format_time(result.min_time)
+    mean_str = format_time(result.mean_time)
+    if result.std_time > 0:
+        std_str = format_time(result.std_time)
+        return f"{base} (avg {mean_str} +/- {std_str})"
+    return base
+
+
+def format_mem_with_std(result):
+    """Format median memory with mean +/- stddev."""
+    base = format_bytes(result.median_mem)
+    if result.std_mem > 0:
+        std_str = format_bytes(int(result.std_mem))
+        return f"{base} (+/- {std_str})"
+    return base
+
+
+def print_comparison(label, os_result, op_result):
+    speedup = op_result.min_time / os_result.min_time if os_result.min_time > 0 else float("inf")
     speed_text = format_speed_relative(speedup)
-    mem_text = format_memory_relative(os_mem, op_mem)
+    mem_text = format_memory_relative(os_result.median_mem, op_result.median_mem)
 
     print(f"\n  {label}")
-    print(f"  {'Library':<22} {'Time (min)':<12} {'Peak RSS Δ':<14}")
-    print(f"  {'-'*48}")
-    print(f"  {'opensheet_core':<22} {format_time(os_time):<12} {format_bytes(os_mem):<14}")
-    print(f"  {'openpyxl':<22} {format_time(op_time):<12} {format_bytes(op_mem):<14}")
+    print(f"  {'Library':<22} {'Time (min of {})'.format('N'):<14} {'RSS delta (median)':<16}")
+    print(f"  {'-'*52}")
+    print(f"  {'opensheet_core':<22} {format_time(os_result.min_time):<14} {format_bytes(os_result.median_mem):<16}")
+    print(f"  {'openpyxl':<22} {format_time(op_result.min_time):<14} {format_bytes(op_result.median_mem):<16}")
+    print()
+    print(f"  Timing detail:")
+    print(f"    opensheet_core  {format_time_with_std(os_result)}")
+    print(f"    openpyxl        {format_time_with_std(op_result)}")
+    print(f"  Memory detail:")
+    print(f"    opensheet_core  {format_mem_with_std(os_result)}")
+    print(f"    openpyxl        {format_mem_with_std(op_result)}")
+    print()
     print(f"  -> {speed_text}, {mem_text}")
 
     return speedup, mem_text
@@ -103,7 +130,7 @@ def main():
     parser = argparse.ArgumentParser(description="OpenSheet Core Benchmark Suite")
     parser.add_argument("--rows", type=int, default=100_000, help="Number of rows (default: 100000)")
     parser.add_argument("--cols", type=int, default=COLS, help="Number of columns (default: 10)")
-    parser.add_argument("--runs", type=int, default=3, help="Runs per benchmark (default: 3)")
+    parser.add_argument("--runs", type=int, default=5, help="Runs per benchmark (default: 5)")
     parser.add_argument("--quick", action="store_true", help="Quick mode: 1000 rows, 1 run")
     args = parser.parse_args()
 
@@ -113,15 +140,15 @@ def main():
 
     rows, cols, runs = args.rows, args.cols, args.runs
 
-    print("=" * 55)
+    print("=" * 60)
     print("  OpenSheet Core Benchmark Suite")
-    print("=" * 55)
+    print("=" * 60)
     print(f"  opensheet_core  {opensheet_core.__version__}")
     print(f"  openpyxl        {openpyxl.__version__}")
     print(f"  Python          {sys.version.split()[0]}")
     print(f"  Dataset         {rows:,} rows x {cols} cols ({rows * cols:,} cells)")
-    print(f"  Runs            {runs}")
-    print(f"  Memory          peak RSS delta over pre-workload baseline")
+    print(f"  Runs            {runs} (interleaved)")
+    print(f"  Memory          current RSS delta (not high-water mark)")
 
     fd, os_path = tempfile.mkstemp(suffix=".xlsx")
     os.close(fd)
@@ -129,31 +156,37 @@ def main():
     os.close(fd)
 
     try:
-        # Warm up
+        # Warm up (populates OS page cache)
         write_opensheet(os_path, min(rows, 100), cols)
         write_openpyxl(op_path, min(rows, 100), cols)
 
-        # Write benchmark
-        os_wt, os_wm = bench(write_opensheet, os_path, rows, cols, runs=runs)
-        op_wt, op_wm = bench(write_openpyxl, op_path, rows, cols, runs=runs)
-        write_speed, write_mem_text = print_comparison("WRITE", os_wt, os_wm, op_wt, op_wm)
+        # Write benchmark (interleaved)
+        os_wr, op_wr = bench_pair(
+            write_opensheet, (os_path, rows, cols),
+            write_openpyxl, (op_path, rows, cols),
+            runs=runs,
+        )
+        write_speed, write_mem_text = print_comparison("WRITE", os_wr, op_wr)
 
         os_size = os.path.getsize(os_path)
         op_size = os.path.getsize(op_path)
         print(f"  File sizes: opensheet {format_bytes(os_size)}, openpyxl {format_bytes(op_size)}")
 
-        # Read benchmark (use openpyxl-written file to avoid style-warning skew)
+        # Read benchmark (use openpyxl-written file to avoid format skew)
         read_opensheet(op_path)  # warm up
         read_openpyxl(op_path)
 
-        os_rt, os_rm = bench(read_opensheet, op_path, runs=runs)
-        op_rt, op_rm = bench(read_openpyxl, op_path, runs=runs)
-        read_speed, read_mem_text = print_comparison("READ", os_rt, os_rm, op_rt, op_rm)
+        os_rr, op_rr = bench_pair(
+            read_opensheet, (op_path,),
+            read_openpyxl, (op_path,),
+            runs=runs,
+        )
+        read_speed, read_mem_text = print_comparison("READ", os_rr, op_rr)
 
         # Summary
-        print(f"\n{'=' * 55}")
+        print(f"\n{'=' * 60}")
         print("  SUMMARY")
-        print(f"{'=' * 55}")
+        print(f"{'=' * 60}")
         print(f"  {'Operation':<10} {'Speed':<18} {'Memory':<24}")
         print(f"  {'-'*50}")
         print(f"  {'Write':<10} {format_speed_relative(write_speed):<18} {write_mem_text:<24}")

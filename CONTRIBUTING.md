@@ -40,8 +40,18 @@ cargo test
 ### Running benchmarks
 
 ```bash
+# Full benchmark (100k rows, 5 interleaved runs)
 python benchmarks/benchmark.py
+
+# Quick smoke test
+python benchmarks/benchmark.py --quick
+
+# Multi-size read/write benchmarks
+python benchmarks/bench_read.py
+python benchmarks/bench_write.py
 ```
+
+See [docs/benchmarking.md](docs/benchmarking.md) for methodology details.
 
 ## Making changes
 
