@@ -36,6 +36,7 @@ Existing Python spreadsheet libraries force you to choose between performance, m
 - **Column widths & row heights** — set and read custom column widths and row heights
 - **Freeze panes** — freeze rows and/or columns so they stay visible when scrolling
 - **Auto-filter** — add drop-down filter controls to column headers
+- **Sheet visibility states** — mark sheets as visible, hidden, or veryHidden; read back state from existing files
 - **Number formats** — write and read cells with custom number formats (currency, percentage, custom format strings)
 - **Cell styling** — fonts (bold, italic, underline, name, size, color), fills, borders (thin, medium, thick, dashed, dotted, double), alignment (horizontal, vertical, wrap text, rotation), and number formats on styled cells
 - **Typed cell extraction** — strings, numbers, booleans, dates, datetimes, formulas, and empty cells are returned as native Python types
@@ -281,7 +282,7 @@ reader = SimpleDirectoryReader(
 
 ### `read_xlsx(path: str) -> list[dict]`
 
-Reads an XLSX file and returns a list of dicts with `"name"` (str), `"rows"` (list of lists), `"merges"` (list of range strings like `"A1:C1"`), `"column_widths"` (dict of 0-based col index to width), `"row_heights"` (dict of 0-based row index to height), `"freeze_pane"` (tuple of `(rows_frozen, cols_frozen)` or `None`), and `"auto_filter"` (range string like `"A1:C1"` or `None`). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `datetime.date`, `datetime.datetime`, `Formula`, `FormattedCell`, or `None`).
+Reads an XLSX file and returns a list of dicts with `"name"` (str), `"rows"` (list of lists), `"merges"` (list of range strings like `"A1:C1"`), `"column_widths"` (dict of 0-based col index to width), `"row_heights"` (dict of 0-based row index to height), `"freeze_pane"` (tuple of `(rows_frozen, cols_frozen)` or `None`), `"auto_filter"` (range string like `"A1:C1"` or `None`), and `"state"` (str: `"visible"`, `"hidden"`, or `"veryHidden"`). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `datetime.date`, `datetime.datetime`, `Formula`, `FormattedCell`, or `None`).
 
 ### `read_sheet(path, sheet_name=None, sheet_index=None) -> list[list]`
 
@@ -304,6 +305,7 @@ Streaming XLSX writer. Use as a context manager.
 | `set_row_height(row, height)` | Set row height in points (`row` is 1-based) |
 | `freeze_panes(row=0, col=0)` | Freeze top `row` rows and left `col` columns |
 | `auto_filter(range)` | Set auto-filter on a range (e.g. `"A1:C1"`) |
+| `set_sheet_state(state)` | Set sheet visibility: `"visible"`, `"hidden"`, or `"veryHidden"` |
 | `close()` | Finalize and close the file |
 
 ### `read_xlsx_df(path, sheet_name=None, sheet_index=None, header=True)`
@@ -414,7 +416,7 @@ OpenSheet Core is designed to be a faster, memory-efficient alternative to openp
 | **Workbook** | Named ranges / defined names | Yes | Planned |
 | | Document properties | Yes | Planned |
 | | Workbook protection | Yes | — |
-| | Multiple sheet states (hidden, veryHidden) | Yes | Planned |
+| | Multiple sheet states (hidden, veryHidden) | Yes | Yes |
 | **Charts** | 12+ chart types (bar, line, pie, scatter, etc.) | Yes | Planned |
 | | 3D variants and combined charts | Yes | — |
 | **Images** | Embed PNG/JPEG | Yes | Planned |
@@ -457,6 +459,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 - [x] Number formats (currency, percentage, custom format strings)
 - [x] Pandas DataFrame integration (`read_xlsx_df` / `to_xlsx`)
 - [x] Basic cell styling (fonts, fills, borders, alignment)
+- [x] Sheet visibility states (visible, hidden, veryHidden)
 - [x] `xlsx_to_markdown()` — structured markdown tables for LLM consumption
 - [x] `xlsx_to_text()` — plain text extraction for search indexes
 - [x] `xlsx_to_chunks()` — embedding-sized chunks with header attachment
@@ -471,7 +474,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 - [ ] .xlsm read support (preserve macros)
 - [ ] Sheet protection
 - [ ] Structured tables with styles
-- [ ] Multiple sheet states (hidden, veryHidden)
+- [x] Multiple sheet states (hidden, veryHidden)
 
 ### Phase 3 — Rich content and ecosystem
 
@@ -492,7 +495,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 
 ## Project Status
 
-**v0.2.1** — streaming reader and writer with formula, date/time, merged cell, column width/row height, freeze pane, auto-filter, number format, cell styling, pandas DataFrame support, and AI/RAG extraction (markdown, text, chunks, LangChain, LlamaIndex). 207 passing tests and prebuilt wheels on PyPI. The API may change before 1.0.
+**v0.2.1** — streaming reader and writer with formula, date/time, merged cell, column width/row height, freeze pane, auto-filter, number format, cell styling, pandas DataFrame support, and AI/RAG extraction (markdown, text, chunks, LangChain, LlamaIndex). 221 passing tests and prebuilt wheels on PyPI. The API may change before 1.0.
 
 ## Contributing
 

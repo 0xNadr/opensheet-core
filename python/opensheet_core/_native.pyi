@@ -18,6 +18,7 @@ def read_xlsx(path: str) -> list[dict[str, Any]]:
       - ``"row_heights"``: dict mapping 0-based row index to height in points
       - ``"freeze_pane"``: tuple of (rows_frozen, cols_frozen) or None
       - ``"auto_filter"``: auto-filter range string (e.g. ``"A1:C1"``) or None
+      - ``"state"``: sheet visibility (``"visible"``, ``"hidden"``, or ``"veryHidden"``)
     """
     ...
 
