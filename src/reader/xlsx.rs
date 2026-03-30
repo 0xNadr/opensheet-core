@@ -83,6 +83,7 @@ pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<Vec<Sheet>, XlsxError> {
             merges: data.merges,
             column_widths: data.column_widths,
             row_heights: data.row_heights,
+            freeze_pane: data.freeze_pane,
         });
     }
 
@@ -392,12 +393,13 @@ fn parse_cell_ref(cell_ref: &str) -> (usize, usize) {
     (row.saturating_sub(1), col)
 }
 
-/// Parsed worksheet data: rows, merge ranges, column widths, and row heights.
+/// Parsed worksheet data: rows, merge ranges, column widths, row heights, and freeze pane.
 struct WorksheetData {
     rows: Vec<Vec<CellValue>>,
     merges: Vec<String>,
     column_widths: HashMap<u32, f64>,
     row_heights: HashMap<u32, f64>,
+    freeze_pane: Option<(u32, u32)>,
 }
 
 /// Parse a single worksheet XML file and return rows of cell values and merge ranges.
@@ -427,11 +429,36 @@ fn parse_worksheet<R: Read + Seek>(
     let mut column_widths: HashMap<u32, f64> = HashMap::new();
     let mut row_heights: HashMap<u32, f64> = HashMap::new();
     let mut in_cols = false;
+    let mut freeze_pane: Option<(u32, u32)> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 match e.name().as_ref() {
+                    b"pane" => {
+                        let mut y_split: u32 = 0;
+                        let mut x_split: u32 = 0;
+                        let mut state = String::new();
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"ySplit" => {
+                                    y_split =
+                                        String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                                }
+                                b"xSplit" => {
+                                    x_split =
+                                        String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                                }
+                                b"state" => {
+                                    state = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                _ => {}
+                            }
+                        }
+                        if state == "frozen" && (y_split > 0 || x_split > 0) {
+                            freeze_pane = Some((y_split, x_split));
+                        }
+                    }
                     b"cols" => {
                         in_cols = true;
                     }
@@ -603,6 +630,28 @@ fn parse_worksheet<R: Read + Seek>(
                     _ => {}
                 }
             }
+            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"pane" => {
+                let mut y_split: u32 = 0;
+                let mut x_split: u32 = 0;
+                let mut state = String::new();
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"ySplit" => {
+                            y_split = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                        }
+                        b"xSplit" => {
+                            x_split = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                        }
+                        b"state" => {
+                            state = String::from_utf8_lossy(&attr.value).to_string();
+                        }
+                        _ => {}
+                    }
+                }
+                if state == "frozen" && (y_split > 0 || x_split > 0) {
+                    freeze_pane = Some((y_split, x_split));
+                }
+            }
             Ok(Event::Empty(ref e)) if in_cols && e.name().as_ref() == b"col" => {
                 let mut min: u32 = 0;
                 let mut max: u32 = 0;
@@ -658,6 +707,7 @@ fn parse_worksheet<R: Read + Seek>(
         merges,
         column_widths,
         row_heights,
+        freeze_pane,
     })
 }
 

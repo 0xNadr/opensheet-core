@@ -69,6 +69,7 @@ pub struct StreamingXlsxWriter<W: Write + Seek> {
     pending_merges: PendingMerges,
     pending_columns: HashMap<u32, f64>,
     pending_row_heights: HashMap<u32, f64>,
+    pending_freeze_pane: Option<(u32, u32)>,
 }
 
 impl<W: Write + Seek> StreamingXlsxWriter<W> {
@@ -85,6 +86,7 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             pending_merges: PendingMerges { ranges: Vec::new() },
             pending_columns: HashMap::new(),
             pending_row_heights: HashMap::new(),
+            pending_freeze_pane: None,
         }
     }
 
@@ -128,6 +130,7 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         self.current_row = 0;
         self.sheet_open = true;
         self.sheet_data_started = false;
+        self.pending_freeze_pane = None;
         Ok(())
     }
 
@@ -136,6 +139,40 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
     fn start_sheet_data(&mut self) -> Result<(), XlsxWriteError> {
         if self.sheet_data_started {
             return Ok(());
+        }
+
+        // Write <sheetViews> with freeze pane if set
+        if let Some((row_split, col_split)) = self.pending_freeze_pane.take() {
+            if row_split > 0 || col_split > 0 {
+                let top_left_cell = format!(
+                    "{}{}",
+                    col_index_to_letter(col_split as usize),
+                    row_split + 1
+                );
+                let active_pane = match (row_split > 0, col_split > 0) {
+                    (true, true) => "bottomRight",
+                    (true, false) => "bottomLeft",
+                    (false, true) => "topRight",
+                    (false, false) => unreachable!(),
+                };
+                write!(
+                    self.zip()?,
+                    "<sheetViews><sheetView tabSelected=\"1\" workbookViewId=\"0\">\
+                     <pane{}{}topLeftCell=\"{top_left_cell}\" activePane=\"{active_pane}\" state=\"frozen\"/>\
+                     <selection pane=\"{active_pane}\"/>\
+                     </sheetView></sheetViews>",
+                    if row_split > 0 {
+                        format!(" ySplit=\"{row_split}\"")
+                    } else {
+                        String::new()
+                    },
+                    if col_split > 0 {
+                        format!(" xSplit=\"{col_split}\"")
+                    } else {
+                        String::new()
+                    },
+                )?;
+            }
         }
 
         // Write <cols> if any column widths are set
@@ -297,6 +334,23 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             ));
         }
         self.pending_columns.insert(col_index, width);
+        Ok(())
+    }
+
+    /// Set freeze panes: freeze the top `row` rows and left `col` columns.
+    /// Must be called after add_sheet() but before write_row().
+    pub fn freeze_panes(&mut self, row: u32, col: u32) -> Result<(), XlsxWriteError> {
+        if !self.sheet_open {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        if self.sheet_data_started {
+            return Err(XlsxWriteError::InvalidState(
+                "Freeze panes must be set before writing any rows.".to_string(),
+            ));
+        }
+        self.pending_freeze_pane = Some((row, col));
         Ok(())
     }
 
@@ -574,5 +628,91 @@ mod tests {
             CellValue::Bool(b) => assert!(*b),
             other => panic!("expected bool, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_freeze_panes_top_row() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Frozen").unwrap();
+            writer.freeze_panes(1, 0).unwrap();
+            writer
+                .write_row(&[CellValue::String("Header".to_string())])
+                .unwrap();
+            writer
+                .write_row(&[CellValue::String("Data".to_string())])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        assert_eq!(sheets[0].freeze_pane, Some((1, 0)));
+    }
+
+    #[test]
+    fn test_freeze_panes_left_column() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Frozen").unwrap();
+            writer.freeze_panes(0, 2).unwrap();
+            writer
+                .write_row(&[CellValue::String("A".to_string())])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        assert_eq!(sheets[0].freeze_pane, Some((0, 2)));
+    }
+
+    #[test]
+    fn test_freeze_panes_both() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Frozen").unwrap();
+            writer.freeze_panes(2, 1).unwrap();
+            writer
+                .write_row(&[CellValue::String("A".to_string())])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        assert_eq!(sheets[0].freeze_pane, Some((2, 1)));
+    }
+
+    #[test]
+    fn test_no_freeze_panes() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Plain").unwrap();
+            writer
+                .write_row(&[CellValue::String("Data".to_string())])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        assert_eq!(sheets[0].freeze_pane, None);
     }
 }

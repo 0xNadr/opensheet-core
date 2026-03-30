@@ -16,6 +16,7 @@ def read_xlsx(path: str) -> list[dict[str, Any]]:
       - ``"merges"``: list of merged cell range strings (e.g. ``"A1:C1"``)
       - ``"column_widths"``: dict mapping 0-based column index to width in character units
       - ``"row_heights"``: dict mapping 0-based row index to height in points
+      - ``"freeze_pane"``: tuple of (rows_frozen, cols_frozen) or None
     """
     ...
 
@@ -56,6 +57,12 @@ class XlsxWriter:
         ...
     def merge_cells(self, range: str) -> None:
         """Merge a range of cells (e.g. ``"A1:C1"``)."""
+        ...
+    def freeze_panes(self, row: int = 0, col: int = 0) -> None:
+        """Freeze the top ``row`` rows and left ``col`` columns.
+
+        Must be called after ``add_sheet()`` but before any ``write_row()`` calls on that sheet.
+        """
         ...
     def set_column_width(self, column: str | int, width: float) -> None:
         """Set the width of a column in character units.

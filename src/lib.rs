@@ -192,6 +192,17 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
         }
         dict.set_item("row_heights", row_heights_dict)?;
 
+        // Freeze pane: (rows_frozen, cols_frozen) or None
+        match sheet.freeze_pane {
+            Some((row, col)) => {
+                let tuple = (row, col);
+                dict.set_item("freeze_pane", tuple)?;
+            }
+            None => {
+                dict.set_item("freeze_pane", py.None())?;
+            }
+        }
+
         result.append(dict)?;
     }
 
@@ -332,6 +343,19 @@ impl XlsxWriter {
             .as_mut()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
         w.merge_cells(range)?;
+        Ok(())
+    }
+
+    /// Freeze the top `row` rows and left `col` columns.
+    ///
+    /// Must be called after add_sheet() but before any write_row() calls on that sheet.
+    #[pyo3(signature = (row=0, col=0))]
+    fn freeze_panes(&mut self, row: u32, col: u32) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.freeze_panes(row, col)?;
         Ok(())
     }
 

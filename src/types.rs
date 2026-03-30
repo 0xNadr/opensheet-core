@@ -39,6 +39,9 @@ pub struct Sheet {
     pub column_widths: std::collections::HashMap<u32, f64>,
     /// Row heights: 0-based row index -> height in points.
     pub row_heights: std::collections::HashMap<u32, f64>,
+    /// Freeze pane split point: (rows_frozen, cols_frozen).
+    /// None if no freeze panes are set.
+    pub freeze_pane: Option<(u32, u32)>,
 }
 
 /// Convert an Excel serial number to (year, month, day, hour, minute, second, microsecond).

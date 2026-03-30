@@ -467,3 +467,122 @@ def test_row_height_openpyxl_interop(tmp_xlsx):
     row_heights = sheets[0]["row_heights"]
     assert abs(row_heights[0] - 30.0) < 0.1  # Row 1
     assert abs(row_heights[1] - 50.0) < 0.1  # Row 2
+
+
+# --- Freeze panes ---
+
+
+def test_freeze_top_row(tmp_xlsx):
+    """Freeze the top row and verify roundtrip."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Frozen")
+        w.freeze_panes(row=1, col=0)
+        w.write_row(["Header1", "Header2"])
+        w.write_row(["Data1", "Data2"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["freeze_pane"] == (1, 0)
+    assert sheets[0]["rows"][0] == ["Header1", "Header2"]
+
+
+def test_freeze_left_column(tmp_xlsx):
+    """Freeze the left column and verify roundtrip."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Frozen")
+        w.freeze_panes(row=0, col=1)
+        w.write_row(["Label", "Value"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["freeze_pane"] == (0, 1)
+
+
+def test_freeze_both_row_and_column(tmp_xlsx):
+    """Freeze top 2 rows and left column."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Frozen")
+        w.freeze_panes(row=2, col=1)
+        w.write_row(["A", "B", "C"])
+        w.write_row(["D", "E", "F"])
+        w.write_row([1, 2, 3])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["freeze_pane"] == (2, 1)
+    assert sheets[0]["rows"][2] == [1, 2, 3]
+
+
+def test_no_freeze_pane(tmp_xlsx):
+    """Sheets without freeze panes return None."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Plain")
+        w.write_row(["no", "freeze"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["freeze_pane"] is None
+
+
+def test_freeze_pane_multi_sheet(tmp_xlsx):
+    """Freeze panes are per-sheet."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Sheet1")
+        w.freeze_panes(row=1, col=0)
+        w.write_row(["Header"])
+        w.add_sheet("Sheet2")
+        w.write_row(["No freeze"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["freeze_pane"] == (1, 0)
+    assert sheets[1]["freeze_pane"] is None
+
+
+def test_freeze_pane_after_write_row_raises(tmp_xlsx):
+    """Setting freeze panes after writing rows should raise an error."""
+    with pytest.raises(Exception, match="before writing any rows"):
+        with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Fail")
+            w.write_row(["too late"])
+            w.freeze_panes(row=1, col=0)
+
+
+def test_freeze_pane_with_column_widths(tmp_xlsx):
+    """Freeze panes combined with column widths."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Both")
+        w.freeze_panes(row=1, col=0)
+        w.set_column_width("A", 20.0)
+        w.write_row(["Header"])
+        w.write_row(["Data"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["freeze_pane"] == (1, 0)
+    assert sheets[0]["column_widths"][0] == 20.0
+
+
+def test_freeze_pane_openpyxl_interop(tmp_xlsx):
+    """Write freeze panes with openpyxl, read with opensheet_core."""
+    openpyxl = pytest.importorskip("openpyxl")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.freeze_panes = "A2"  # Freeze top row
+    ws.append(["Header"])
+    ws.append(["Data"])
+    wb.save(tmp_xlsx)
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["freeze_pane"] == (1, 0)
+
+
+def test_freeze_pane_openpyxl_both(tmp_xlsx):
+    """Write freeze panes (both row+col) with openpyxl, read with opensheet_core."""
+    openpyxl = pytest.importorskip("openpyxl")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.freeze_panes = "B3"  # Freeze top 2 rows and left column
+    ws.append(["A", "B", "C"])
+    ws.append(["D", "E", "F"])
+    ws.append([1, 2, 3])
+    wb.save(tmp_xlsx)
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["freeze_pane"] == (2, 1)
