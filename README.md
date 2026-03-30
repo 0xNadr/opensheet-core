@@ -36,6 +36,7 @@ Existing Python spreadsheet libraries force you to choose between performance, m
 - **Column widths & row heights** — set and read custom column widths and row heights
 - **Freeze panes** — freeze rows and/or columns so they stay visible when scrolling
 - **Auto-filter** — add drop-down filter controls to column headers
+- **Number formats** — write and read cells with custom number formats (currency, percentage, custom format strings)
 - **Typed cell extraction** — strings, numbers, booleans, dates, datetimes, formulas, and empty cells are returned as native Python types
 - **Context manager support** — Pythonic `with` statement for safe resource management
 - **AI/RAG-ready** — convert spreadsheets to markdown, chunked text, or plain text for LLM pipelines (planned)
@@ -161,6 +162,21 @@ with XlsxWriter("output.xlsx") as writer:
     writer.auto_filter("A1:C1")
 ```
 
+### Number formats
+
+```python
+from opensheet_core import XlsxWriter, FormattedCell
+
+with XlsxWriter("output.xlsx") as writer:
+    writer.add_sheet("Finance")
+    writer.write_row(["Item", "Price", "Tax Rate"])
+    writer.write_row([
+        "Widget",
+        FormattedCell(19.99, "$#,##0.00"),   # Currency
+        FormattedCell(0.08, "0.00%"),         # Percentage
+    ])
+```
+
 ### Writing formulas
 
 ```python
@@ -178,7 +194,7 @@ with XlsxWriter("output.xlsx") as writer:
 
 ### `read_xlsx(path: str) -> list[dict]`
 
-Reads an XLSX file and returns a list of dicts with `"name"` (str), `"rows"` (list of lists), `"merges"` (list of range strings like `"A1:C1"`), `"column_widths"` (dict of 0-based col index to width), `"row_heights"` (dict of 0-based row index to height), `"freeze_pane"` (tuple of `(rows_frozen, cols_frozen)` or `None`), and `"auto_filter"` (range string like `"A1:C1"` or `None`). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `datetime.date`, `datetime.datetime`, `Formula`, or `None`).
+Reads an XLSX file and returns a list of dicts with `"name"` (str), `"rows"` (list of lists), `"merges"` (list of range strings like `"A1:C1"`), `"column_widths"` (dict of 0-based col index to width), `"row_heights"` (dict of 0-based row index to height), `"freeze_pane"` (tuple of `(rows_frozen, cols_frozen)` or `None`), and `"auto_filter"` (range string like `"A1:C1"` or `None`). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `datetime.date`, `datetime.datetime`, `Formula`, `FormattedCell`, or `None`).
 
 ### `read_sheet(path, sheet_name=None, sheet_index=None) -> list[list]`
 
@@ -202,6 +218,10 @@ Streaming XLSX writer. Use as a context manager.
 | `freeze_panes(row=0, col=0)` | Freeze top `row` rows and left `col` columns |
 | `auto_filter(range)` | Set auto-filter on a range (e.g. `"A1:C1"`) |
 | `close()` | Finalize and close the file |
+
+### `FormattedCell(value, number_format: str)`
+
+A numeric value with a custom Excel number format code. Pass as a cell value in `write_row()`. Returned by `read_xlsx()` for cells with non-default number formats. Common format codes: `"$#,##0.00"` (currency), `"0.00%"` (percentage), `"#,##0"` (thousands separator).
 
 ### `Formula(formula: str, cached_value=None)`
 
@@ -253,7 +273,7 @@ OpenSheet Core is designed to be a faster, memory-efficient alternative to openp
 | | Fill (solid, pattern, gradient) | Yes | Planned |
 | | Borders (14 styles) | Yes | Planned |
 | | Alignment (horizontal, vertical, wrap, rotation) | Yes | Planned |
-| | Number formats (30+ builtins + custom) | Yes | Date/datetime only |
+| | Number formats (30+ builtins + custom) | Yes | Yes |
 | | Named styles | Yes | Planned |
 | | Conditional formatting (6 rule types) | Yes | Planned |
 | **Worksheet** | Merged cells | Yes | Yes |
@@ -308,11 +328,11 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 - [x] Column widths and row heights
 - [x] Freeze panes
 - [x] Auto-filter
+- [x] Number formats (currency, percentage, custom format strings)
 
 ### Phase 1 — Core usability (next)
 
 - [ ] Basic cell styling (fonts, fills, borders, alignment)
-- [ ] Number formats (currency, percentage, custom format strings)
 - [ ] Pandas integration (`read_xlsx_df` / `to_xlsx`)
 
 ### Phase 1.5 — AI/RAG integration
@@ -351,7 +371,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 
 ## Project Status
 
-**v0.1.1** — streaming reader and writer with formula, date/time, merged cell, column width/row height, freeze pane, and auto-filter support. 73 passing tests and prebuilt wheels on PyPI. The API may change before 1.0.
+**v0.1.1** — streaming reader and writer with formula, date/time, merged cell, column width/row height, freeze pane, auto-filter, and number format support. 85 passing tests and prebuilt wheels on PyPI. The API may change before 1.0.
 
 ## Contributing
 
