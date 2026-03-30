@@ -359,6 +359,9 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
             None => dict.set_item("auto_filter", py.None())?,
         }
 
+        // Sheet visibility state
+        dict.set_item("state", &sheet.state)?;
+
         result.append(dict)?;
     }
 
@@ -766,6 +769,18 @@ impl XlsxWriter {
             .as_mut()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
         w.auto_filter(range)?;
+        Ok(())
+    }
+
+    /// Set the visibility state of the current sheet.
+    ///
+    /// Valid states: "visible" (default), "hidden", "veryHidden".
+    fn set_sheet_state(&mut self, state: &str) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.set_sheet_state(state)?;
         Ok(())
     }
 

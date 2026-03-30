@@ -134,6 +134,8 @@ fn normalize_color(color: &str) -> String {
 struct SheetEntry {
     name: String,
     index: usize,
+    /// Sheet visibility: "visible", "hidden", or "veryHidden".
+    state: String,
 }
 
 /// Pending merge ranges for the current sheet.
@@ -305,6 +307,7 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         self.sheets.push(SheetEntry {
             name: name.to_string(),
             index,
+            state: "visible".to_string(),
         });
 
         // Start the worksheet XML file in the ZIP (fastest deflate for bulk sheet data)
@@ -635,6 +638,27 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         Ok(())
     }
 
+    /// Set the visibility state of the current sheet.
+    ///
+    /// Valid states: "visible", "hidden", "veryHidden".
+    pub fn set_sheet_state(&mut self, state: &str) -> Result<(), XlsxWriteError> {
+        if self.sheets.is_empty() {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        match state {
+            "visible" | "hidden" | "veryHidden" => {}
+            _ => {
+                return Err(XlsxWriteError::InvalidState(format!(
+                    "Invalid sheet state: '{state}'. Must be 'visible', 'hidden', or 'veryHidden'."
+                )));
+            }
+        }
+        self.sheets.last_mut().unwrap().state = state.to_string();
+        Ok(())
+    }
+
     /// Set the height of a row (0-based index) in points.
     pub fn set_row_height(&mut self, row_index: u32, height: f64) -> Result<(), XlsxWriteError> {
         if !self.sheet_open {
@@ -891,11 +915,19 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         for i in 0..self.sheets.len() {
             let name = self.sheets[i].name.clone();
             let index = self.sheets[i].index;
+            let state = self.sheets[i].state.clone();
             let escaped_name = xml_escape(&name);
-            write!(
-                self.zip()?,
-                "<sheet name=\"{escaped_name}\" sheetId=\"{index}\" r:id=\"rId{index}\"/>"
-            )?;
+            if state == "visible" {
+                write!(
+                    self.zip()?,
+                    "<sheet name=\"{escaped_name}\" sheetId=\"{index}\" r:id=\"rId{index}\"/>"
+                )?;
+            } else {
+                write!(
+                    self.zip()?,
+                    "<sheet name=\"{escaped_name}\" sheetId=\"{index}\" state=\"{state}\" r:id=\"rId{index}\"/>"
+                )?;
+            }
         }
         write!(self.zip()?, "</sheets></workbook>")?;
 

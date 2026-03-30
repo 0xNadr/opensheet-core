@@ -55,6 +55,8 @@ impl From<XlsxError> for pyo3::PyErr {
 struct SheetInfo {
     name: String,
     path: String,
+    /// Sheet visibility: "visible", "hidden", or "veryHidden".
+    state: String,
 }
 
 /// Read an XLSX file and return all sheets plus the shared string table.
@@ -88,6 +90,7 @@ pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<(Vec<Sheet>, Vec<String>),
             row_heights: data.row_heights,
             freeze_pane: data.freeze_pane,
             auto_filter: data.auto_filter,
+            state: info.state.clone(),
         });
     }
 
@@ -136,6 +139,7 @@ pub fn read_single_sheet<R: Read + Seek>(
         row_heights: data.row_heights,
         freeze_pane: data.freeze_pane,
         auto_filter: data.auto_filter,
+        state: info.state.clone(),
     };
 
     Ok((sheet, shared_strings))
@@ -214,11 +218,13 @@ fn parse_workbook<R: Read + Seek>(
             Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) if e.name().as_ref() == b"sheet" => {
                 let mut name = String::new();
                 let mut r_id = String::new();
+                let mut state = String::from("visible");
 
                 for attr in e.attributes().flatten() {
                     match attr.key.as_ref() {
                         b"name" => name = String::from_utf8_lossy(&attr.value).to_string(),
                         b"r:id" => r_id = String::from_utf8_lossy(&attr.value).to_string(),
+                        b"state" => state = String::from_utf8_lossy(&attr.value).to_string(),
                         _ => {}
                     }
                 }
@@ -228,7 +234,7 @@ fn parse_workbook<R: Read + Seek>(
                         .get(&r_id)
                         .cloned()
                         .unwrap_or_else(|| format!("xl/worksheets/sheet{}.xml", sheets.len() + 1));
-                    sheets.push(SheetInfo { name, path });
+                    sheets.push(SheetInfo { name, path, state });
                 }
             }
             Ok(Event::Eof) => break,

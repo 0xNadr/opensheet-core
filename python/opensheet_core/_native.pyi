@@ -73,6 +73,12 @@ class XlsxWriter:
     def auto_filter(self, range: str) -> None:
         """Set an auto-filter on a range (e.g. ``"A1:C1"``)."""
         ...
+    def set_sheet_state(self, state: str) -> None:
+        """Set the visibility state of the current sheet.
+
+        Valid states: ``"visible"`` (default), ``"hidden"``, ``"veryHidden"``.
+        """
+        ...
     def freeze_panes(self, row: int = 0, col: int = 0) -> None:
         """Freeze the top ``row`` rows and left ``col`` columns.
 

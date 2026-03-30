@@ -110,6 +110,8 @@ pub struct Sheet {
     pub freeze_pane: Option<(u32, u32)>,
     /// Auto-filter range (e.g. "A1:C1"), or None if not set.
     pub auto_filter: Option<std::string::String>,
+    /// Sheet visibility state: "visible", "hidden", or "veryHidden".
+    pub state: std::string::String,
 }
 
 /// Convert an Excel serial number to (year, month, day, hour, minute, second, microsecond).
