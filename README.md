@@ -35,6 +35,7 @@ Existing Python spreadsheet libraries force you to choose between performance, m
 - **Merged cells** — read and write merged cell ranges
 - **Column widths & row heights** — set and read custom column widths and row heights
 - **Freeze panes** — freeze rows and/or columns so they stay visible when scrolling
+- **Auto-filter** — add drop-down filter controls to column headers
 - **Typed cell extraction** — strings, numbers, booleans, dates, datetimes, formulas, and empty cells are returned as native Python types
 - **Context manager support** — Pythonic `with` statement for safe resource management
 - **Cross-platform** — tested on Linux, macOS, and Windows across Python 3.9–3.13
@@ -146,6 +147,19 @@ with XlsxWriter("output.xlsx") as writer:
     writer.write_row(["data", "data", "data"])
 ```
 
+### Auto-filter
+
+```python
+from opensheet_core import XlsxWriter
+
+with XlsxWriter("output.xlsx") as writer:
+    writer.add_sheet("Data")
+    writer.write_row(["Name", "Age", "City"])
+    writer.write_row(["Alice", 30, "NYC"])
+    writer.write_row(["Bob", 25, "LA"])
+    writer.auto_filter("A1:C1")
+```
+
 ### Writing formulas
 
 ```python
@@ -163,7 +177,7 @@ with XlsxWriter("output.xlsx") as writer:
 
 ### `read_xlsx(path: str) -> list[dict]`
 
-Reads an XLSX file and returns a list of dicts with `"name"` (str), `"rows"` (list of lists), `"merges"` (list of range strings like `"A1:C1"`), `"column_widths"` (dict of 0-based col index to width), `"row_heights"` (dict of 0-based row index to height), and `"freeze_pane"` (tuple of `(rows_frozen, cols_frozen)` or `None`). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `datetime.date`, `datetime.datetime`, `Formula`, or `None`).
+Reads an XLSX file and returns a list of dicts with `"name"` (str), `"rows"` (list of lists), `"merges"` (list of range strings like `"A1:C1"`), `"column_widths"` (dict of 0-based col index to width), `"row_heights"` (dict of 0-based row index to height), `"freeze_pane"` (tuple of `(rows_frozen, cols_frozen)` or `None`), and `"auto_filter"` (range string like `"A1:C1"` or `None`). Each cell is a typed Python value (`str`, `int`, `float`, `bool`, `datetime.date`, `datetime.datetime`, `Formula`, or `None`).
 
 ### `read_sheet(path, sheet_name=None, sheet_index=None) -> list[list]`
 
@@ -185,6 +199,7 @@ Streaming XLSX writer. Use as a context manager.
 | `set_column_width(column, width)` | Set column width (`column` is a letter or 0-based int) |
 | `set_row_height(row, height)` | Set row height in points (`row` is 1-based) |
 | `freeze_panes(row=0, col=0)` | Freeze top `row` rows and left `col` columns |
+| `auto_filter(range)` | Set auto-filter on a range (e.g. `"A1:C1"`) |
 | `close()` | Finalize and close the file |
 
 ### `Formula(formula: str, cached_value=None)`
@@ -242,7 +257,7 @@ OpenSheet Core is designed to be a faster, memory-efficient alternative to openp
 | | Conditional formatting (6 rule types) | Yes | Planned |
 | **Worksheet** | Merged cells | Yes | Yes |
 | | Freeze panes | Yes | Yes |
-| | Auto-filter | Yes | Planned |
+| | Auto-filter | Yes | Yes |
 | | Column widths / row heights | Yes | Yes |
 | | Data validation (7 types) | Yes | Planned |
 | | Sheet protection | Yes | Planned |
@@ -288,12 +303,12 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 - [x] Zero Python dependencies
 - [x] Column widths and row heights
 - [x] Freeze panes
+- [x] Auto-filter
 
 ### Phase 1 — Core usability (next)
 
 - [ ] Basic cell styling (fonts, fills, borders, alignment)
 - [ ] Number formats (currency, percentage, custom format strings)
-- [ ] Auto-filter
 - [ ] Pandas integration (`read_xlsx_df` / `to_xlsx`)
 
 ### Phase 2 — Broader compatibility
@@ -318,7 +333,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 
 ## Project Status
 
-**v0.1.1** — streaming reader and writer with formula, date/time, merged cell, column width/row height, and freeze pane support. 53 passing tests and prebuilt wheels on PyPI. The API may change before 1.0.
+**v0.1.1** — streaming reader and writer with formula, date/time, merged cell, column width/row height, freeze pane, and auto-filter support. 73 passing tests and prebuilt wheels on PyPI. The API may change before 1.0.
 
 ## Contributing
 
