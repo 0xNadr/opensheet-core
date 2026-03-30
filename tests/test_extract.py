@@ -424,3 +424,75 @@ class TestEdgeCases:
         """Fractional floats should preserve decimals."""
         from opensheet_core.extract import _cell_to_str
         assert _cell_to_str(3.14) == "3.14"
+
+    def test_newlines_in_cells_markdown(self, tmp_xlsx):
+        """Newlines in cell content should be replaced with spaces in markdown."""
+        with XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Data")
+            w.write_row(["Header"])
+            w.write_row(["line1\nline2"])
+        md = xlsx_to_markdown(tmp_xlsx)
+        assert "line1 line2" in md
+        # Should be exactly 4 lines: header, separator, 1 data row, (no extra)
+        assert len(md.strip().split("\n")) == 3
+
+    def test_newlines_in_cells_text(self, tmp_xlsx):
+        """Newlines in cell content should be replaced with spaces in text."""
+        with XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Data")
+            w.write_row(["line1\nline2", "ok"])
+        text = xlsx_to_text(tmp_xlsx)
+        assert "line1 line2" in text
+        assert text.count("\n") == 0  # single row, no extra newlines
+
+    def test_carriage_return_in_cells(self, tmp_xlsx):
+        """\\r\\n and \\r should also be collapsed to spaces."""
+        with XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Data")
+            w.write_row(["Header"])
+            w.write_row(["a\r\nb\rc"])
+        md = xlsx_to_markdown(tmp_xlsx)
+        assert "a b c" in md
+
+    def test_markdown_pipe_in_cell(self, tmp_xlsx):
+        """Pipe characters in cells should be escaped in markdown output."""
+        with XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Data")
+            w.write_row(["Header"])
+            w.write_row(["a|b"])
+        md = xlsx_to_markdown(tmp_xlsx)
+        # The pipe should be escaped so it doesn't break the table
+        assert "a\\|b" in md
+        # Each data line should still have exactly 2 outer pipes
+        data_line = md.strip().split("\n")[2]
+        # Count unescaped pipes only
+        import re
+        unescaped = re.findall(r'(?<!\\)\|', data_line)
+        assert len(unescaped) == 2  # leading and trailing pipe
+
+    def test_text_pipe_not_escaped(self, tmp_xlsx):
+        """Plain text output should NOT escape pipes."""
+        with XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Data")
+            w.write_row(["a|b"])
+        text = xlsx_to_text(tmp_xlsx)
+        assert "a|b" in text
+        assert "\\|" not in text
+
+    def test_text_ragged_rows_padded(self, tmp_xlsx):
+        """Rows with fewer columns should be padded to consistent width."""
+        with XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Data")
+            w.write_row(["A", "B", "C"])
+            w.write_row(["x"])
+        text = xlsx_to_text(tmp_xlsx)
+        lines = text.split("\n")
+        # Both rows should have the same number of tab separators
+        assert lines[0].count("\t") == lines[1].count("\t") == 2
+
+    def test_cell_to_str_inf_and_nan(self):
+        """inf, -inf, and nan should not crash."""
+        from opensheet_core.extract import _cell_to_str
+        assert _cell_to_str(float("inf")) == "inf"
+        assert _cell_to_str(float("-inf")) == "-inf"
+        assert _cell_to_str(float("nan")) == "nan"

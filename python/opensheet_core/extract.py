@@ -5,6 +5,7 @@ converting spreadsheets into LLM-friendly formats.
 """
 
 import datetime
+import math
 
 from opensheet_core._native import (
     read_xlsx,
@@ -38,11 +39,18 @@ def _cell_to_str(val):
     if isinstance(val, datetime.date):
         return val.isoformat()
     if isinstance(val, float):
+        if math.isinf(val) or math.isnan(val):
+            return str(val)
         # Drop trailing .0 for whole numbers
         if val == int(val):
             return str(int(val))
         return str(val)
-    return str(val)
+    s = str(val)
+    # Replace newlines (common in multi-line Excel cells) with spaces
+    # to preserve the one-row-per-line invariant in all output formats.
+    if "\n" in s or "\r" in s:
+        s = s.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return s
 
 
 def _pad_rows(rows, ncols):
@@ -71,8 +79,8 @@ def _rows_to_markdown(rows, header=True):
     ncols = _max_cols(rows)
     rows = _pad_rows(rows, ncols)
 
-    # Convert all cells to strings
-    str_rows = [[_cell_to_str(cell) for cell in row] for row in rows]
+    # Convert all cells to strings, escaping pipes for markdown
+    str_rows = [[_cell_to_str(cell).replace("\\", "\\\\").replace("|", "\\|") for cell in row] for row in rows]
 
     # Calculate column widths for alignment
     col_widths = [0] * ncols
@@ -151,18 +159,21 @@ def xlsx_to_text(path, sheet_name=None, sheet_index=None, delimiter="\t"):
     Returns:
         A plain text string with one row per line.
     """
+    def _rows_to_lines(rows):
+        ncols = _max_cols(rows) if rows else 0
+        padded = _pad_rows(rows, ncols)
+        return [delimiter.join(_cell_to_str(cell) for cell in row) for row in padded]
+
     if sheet_name is not None or sheet_index is not None:
         rows = read_sheet(path, sheet_name=sheet_name, sheet_index=sheet_index)
-        lines = [delimiter.join(_cell_to_str(cell) for cell in row) for row in rows]
-        return "\n".join(lines)
+        return "\n".join(_rows_to_lines(rows))
 
     sheets = read_xlsx(path)
     parts = []
     for sheet in sheets:
         if len(sheets) > 1:
             parts.append(f"--- {sheet['name']} ---")
-        for row in sheet["rows"]:
-            parts.append(delimiter.join(_cell_to_str(cell) for cell in row))
+        parts.extend(_rows_to_lines(sheet["rows"]))
     return "\n".join(parts)
 
 
