@@ -313,7 +313,7 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     let file = File::open(path)
         .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("{path}: {e}")))?;
     let reader = BufReader::new(file);
-    let (sheets, shared_strings) = reader::xlsx::read_xlsx(reader)?;
+    let (sheets, shared_strings, _defined_names) = reader::xlsx::read_xlsx(reader)?;
 
     // Pre-convert shared strings to Python objects for reuse
     let py_shared = intern_shared_strings(py, &shared_strings);
@@ -362,6 +362,34 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
         // Sheet visibility state
         dict.set_item("state", &sheet.state)?;
 
+        result.append(dict)?;
+    }
+
+    Ok(result.into_any().unbind())
+}
+
+/// Read defined names (named ranges) from an XLSX file.
+///
+/// Returns a list of dicts with:
+///   - "name": the defined name (str)
+///   - "value": the reference/formula (str)
+///   - "sheet_index": 0-based sheet index if sheet-scoped, or None if workbook-scoped
+#[pyfunction]
+fn defined_names(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+    let file = File::open(path)
+        .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("{path}: {e}")))?;
+    let reader = BufReader::new(file);
+    let names = reader::xlsx::read_defined_names(reader)?;
+
+    let result = PyList::empty(py);
+    for dn in names {
+        let dict = PyDict::new(py);
+        dict.set_item("name", &dn.name)?;
+        dict.set_item("value", &dn.value)?;
+        match dn.sheet_index {
+            Some(idx) => dict.set_item("sheet_index", idx)?,
+            None => dict.set_item("sheet_index", py.None())?,
+        }
         result.append(dict)?;
     }
 
@@ -772,6 +800,21 @@ impl XlsxWriter {
         Ok(())
     }
 
+    /// Define a named range (defined name) for the workbook.
+    ///
+    /// - `name`: The defined name (e.g. "TaxRate").
+    /// - `value`: The reference (e.g. "Sheet1!$B$2").
+    /// - `sheet_index`: If provided, the name is scoped to that sheet (0-based).
+    #[pyo3(signature = (name, value, sheet_index=None))]
+    fn define_name(&mut self, name: &str, value: &str, sheet_index: Option<usize>) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.define_name(name, value, sheet_index)?;
+        Ok(())
+    }
+
     /// Set the visibility state of the current sheet.
     ///
     /// Valid states: "visible" (default), "hidden", "veryHidden".
@@ -910,6 +953,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_xlsx, m)?)?;
     m.add_function(wrap_pyfunction!(read_sheet, m)?)?;
     m.add_function(wrap_pyfunction!(sheet_names, m)?)?;
+    m.add_function(wrap_pyfunction!(defined_names, m)?)?;
     m.add_class::<XlsxWriter>()?;
     m.add_class::<Formula>()?;
     m.add_class::<FormattedCell>()?;

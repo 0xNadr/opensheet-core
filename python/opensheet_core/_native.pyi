@@ -37,6 +37,16 @@ def sheet_names(path: str) -> list[str]:
     """Return the list of sheet names in a workbook."""
     ...
 
+def defined_names(path: str) -> list[dict[str, Any]]:
+    """Return the defined names (named ranges) in a workbook.
+
+    Each dict has keys:
+      - ``"name"``: the defined name (str)
+      - ``"value"``: the reference or formula (str)
+      - ``"sheet_index"``: 0-based sheet index if sheet-scoped, or None if workbook-scoped
+    """
+    ...
+
 class XlsxWriter:
     """Streaming XLSX writer.
 
@@ -78,6 +88,21 @@ class XlsxWriter:
         """Set the visibility state of the current sheet.
 
         Valid states: ``"visible"`` (default), ``"hidden"``, ``"veryHidden"``.
+        """
+        ...
+    def define_name(
+        self,
+        name: str,
+        value: str,
+        sheet_index: int | None = None,
+    ) -> None:
+        """Define a named range (defined name) for the workbook.
+
+        Args:
+            name: The defined name (e.g. ``"TaxRate"``).
+            value: The reference (e.g. ``"Sheet1!$B$2"``).
+            sheet_index: If provided, the name is scoped to that sheet (0-based).
+                If None (default), the name is workbook-scoped.
         """
         ...
     def freeze_panes(self, row: int = 0, col: int = 0) -> None:

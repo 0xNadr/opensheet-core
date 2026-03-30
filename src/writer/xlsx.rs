@@ -138,6 +138,14 @@ struct SheetEntry {
     state: String,
 }
 
+/// A defined name (named range) entry.
+struct DefinedNameEntry {
+    name: String,
+    value: String,
+    /// If Some, the name is sheet-scoped (0-based sheet index). If None, workbook-scoped.
+    sheet_index: Option<usize>,
+}
+
 /// Pending merge ranges for the current sheet.
 struct PendingMerges {
     ranges: Vec<String>,
@@ -160,6 +168,7 @@ pub struct StreamingXlsxWriter<W: Write + Seek> {
     pending_row_heights: HashMap<u32, f64>,
     pending_freeze_pane: Option<(u32, u32)>,
     pending_auto_filter: Option<String>,
+    defined_names: Vec<DefinedNameEntry>,
     // Style registries (Vec for ordered output + HashMap for O(1) dedup)
     fonts: Vec<FontDef>,
     font_index: HashMap<FontDef, usize>,
@@ -190,6 +199,7 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             pending_row_heights: HashMap::new(),
             pending_freeze_pane: None,
             pending_auto_filter: None,
+            defined_names: Vec::new(),
             fonts: vec![FontDef::default()],
             font_index: HashMap::from([(FontDef::default(), 0)]),
             fills: {
@@ -659,6 +669,35 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         Ok(())
     }
 
+    /// Define a named range (defined name) for the workbook.
+    ///
+    /// - `name`: The defined name (e.g. "TaxRate").
+    /// - `value`: The reference (e.g. "Sheet1!$B$2").
+    /// - `sheet_index`: If Some, the name is scoped to that sheet (0-based). If None, workbook-scoped.
+    pub fn define_name(
+        &mut self,
+        name: &str,
+        value: &str,
+        sheet_index: Option<usize>,
+    ) -> Result<(), XlsxWriteError> {
+        if name.is_empty() {
+            return Err(XlsxWriteError::InvalidState(
+                "Defined name cannot be empty.".to_string(),
+            ));
+        }
+        if value.is_empty() {
+            return Err(XlsxWriteError::InvalidState(
+                "Defined name value cannot be empty.".to_string(),
+            ));
+        }
+        self.defined_names.push(DefinedNameEntry {
+            name: name.to_string(),
+            value: value.to_string(),
+            sheet_index,
+        });
+        Ok(())
+    }
+
     /// Set the height of a row (0-based index) in points.
     pub fn set_row_height(&mut self, row_index: u32, height: f64) -> Result<(), XlsxWriteError> {
         if !self.sheet_open {
@@ -929,7 +968,34 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                 )?;
             }
         }
-        write!(self.zip()?, "</sheets></workbook>")?;
+        write!(self.zip()?, "</sheets>")?;
+
+        // Write defined names if any
+        let defined_names = std::mem::take(&mut self.defined_names);
+        if !defined_names.is_empty() {
+            write!(self.zip()?, "<definedNames>")?;
+            for dn in &defined_names {
+                let escaped_name = xml_escape(&dn.name);
+                let escaped_value = xml_escape(&dn.value);
+                match dn.sheet_index {
+                    Some(idx) => {
+                        write!(
+                            self.zip()?,
+                            "<definedName name=\"{escaped_name}\" localSheetId=\"{idx}\">{escaped_value}</definedName>"
+                        )?;
+                    }
+                    None => {
+                        write!(
+                            self.zip()?,
+                            "<definedName name=\"{escaped_name}\">{escaped_value}</definedName>"
+                        )?;
+                    }
+                }
+            }
+            write!(self.zip()?, "</definedNames>")?;
+        }
+
+        write!(self.zip()?, "</workbook>")?;
 
         // Write xl/_rels/workbook.xml.rels
         self.zip()?
@@ -1264,7 +1330,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
 
         assert_eq!(sheets.len(), 1);
         assert_eq!(sheets[0].name, "TestSheet");
@@ -1284,7 +1350,7 @@ mod tests {
 
         // Row 3: bool
         match &sheets[0].rows[2][0] {
-            CellValue::Bool(b) => assert!(*b),
+            CellValue::Bool(b) => assert!(b),
             other => panic!("expected bool, got {other:?}"),
         }
     }
@@ -1309,7 +1375,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         assert_eq!(sheets[0].freeze_pane, Some((1, 0)));
     }
 
@@ -1330,7 +1396,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         assert_eq!(sheets[0].freeze_pane, Some((0, 2)));
     }
 
@@ -1351,7 +1417,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         assert_eq!(sheets[0].freeze_pane, Some((2, 1)));
     }
 
@@ -1371,7 +1437,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         assert_eq!(sheets[0].freeze_pane, None);
     }
 
@@ -1401,7 +1467,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         assert_eq!(sheets[0].auto_filter, Some("A1:B1".to_string()));
     }
 
@@ -1436,7 +1502,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         assert_eq!(sheets.len(), 1);
 
         // Row 2, Col 0: formatted number with currency
@@ -1484,7 +1550,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
 
         match &sheets[0].rows[0][0] {
             CellValue::FormattedNumber { value, format_code } => {
@@ -1518,7 +1584,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         assert_eq!(sheets[0].auto_filter, None);
     }
 
@@ -1544,7 +1610,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         match &sheets[0].rows[0][0] {
             CellValue::StyledCell { value, style } => {
                 match value.as_ref() {
@@ -1579,7 +1645,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         match &sheets[0].rows[0][0] {
             CellValue::StyledCell { value, style } => {
                 match value.as_ref() {
@@ -1618,7 +1684,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         match &sheets[0].rows[0][0] {
             CellValue::StyledCell { value, style } => {
                 match value.as_ref() {
@@ -1658,7 +1724,7 @@ mod tests {
         }
 
         buf.set_position(0);
-        let (sheets, _shared_strings) = read_xlsx(buf).unwrap();
+        let (sheets, _shared_strings, _defined_names) = read_xlsx(buf).unwrap();
         match &sheets[0].rows[0][0] {
             CellValue::StyledCell { value, style } => {
                 match value.as_ref() {

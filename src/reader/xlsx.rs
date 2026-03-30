@@ -59,18 +59,30 @@ struct SheetInfo {
     state: String,
 }
 
+/// A defined name (named range) from the workbook.
+#[derive(Debug, Clone)]
+pub struct DefinedName {
+    pub name: String,
+    pub value: String,
+    /// If Some, the name is sheet-scoped (0-based sheet index). If None, workbook-scoped.
+    pub sheet_index: Option<usize>,
+}
+
 /// Read an XLSX file and return all sheets plus the shared string table.
 ///
 /// Cells referencing shared strings are stored as `CellValue::SharedString(index)`
 /// to avoid cloning. The caller must resolve them using the returned shared strings.
-pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<(Vec<Sheet>, Vec<String>), XlsxError> {
+#[allow(clippy::type_complexity)]
+pub fn read_xlsx<R: Read + Seek>(
+    reader: R,
+) -> Result<(Vec<Sheet>, Vec<String>, Vec<DefinedName>), XlsxError> {
     let mut archive = ZipArchive::new(reader)?;
 
     // 1. Parse relationships to map rId -> file path
     let rels = parse_workbook_rels(&mut archive)?;
 
-    // 2. Parse workbook.xml to get sheet names and their rIds
-    let sheet_infos = parse_workbook(&mut archive, &rels)?;
+    // 2. Parse workbook.xml to get sheet names, rIds, and defined names
+    let (sheet_infos, defined_names) = parse_workbook(&mut archive, &rels)?;
 
     // 3. Parse shared strings
     let shared_strings = parse_shared_strings(&mut archive)?;
@@ -94,7 +106,7 @@ pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<(Vec<Sheet>, Vec<String>),
         });
     }
 
-    Ok((sheets, shared_strings))
+    Ok((sheets, shared_strings, defined_names))
 }
 
 /// Read a single sheet by name or index, without parsing other worksheets.
@@ -108,7 +120,7 @@ pub fn read_single_sheet<R: Read + Seek>(
     let mut archive = ZipArchive::new(reader)?;
 
     let rels = parse_workbook_rels(&mut archive)?;
-    let sheet_infos = parse_workbook(&mut archive, &rels)?;
+    let (sheet_infos, _defined_names) = parse_workbook(&mut archive, &rels)?;
     let shared_strings = parse_shared_strings(&mut archive)?;
     let styles = parse_styles(&mut archive)?;
 
@@ -149,8 +161,16 @@ pub fn read_single_sheet<R: Read + Seek>(
 pub fn read_sheet_names<R: Read + Seek>(reader: R) -> Result<Vec<String>, XlsxError> {
     let mut archive = ZipArchive::new(reader)?;
     let rels = parse_workbook_rels(&mut archive)?;
-    let sheet_infos = parse_workbook(&mut archive, &rels)?;
+    let (sheet_infos, _) = parse_workbook(&mut archive, &rels)?;
     Ok(sheet_infos.into_iter().map(|s| s.name).collect())
+}
+
+/// Read defined names (named ranges) without parsing worksheet data.
+pub fn read_defined_names<R: Read + Seek>(reader: R) -> Result<Vec<DefinedName>, XlsxError> {
+    let mut archive = ZipArchive::new(reader)?;
+    let rels = parse_workbook_rels(&mut archive)?;
+    let (_, defined_names) = parse_workbook(&mut archive, &rels)?;
+    Ok(defined_names)
 }
 
 /// Parse xl/_rels/workbook.xml.rels to get rId -> target path mapping.
@@ -207,11 +227,18 @@ fn parse_workbook_rels<R: Read + Seek>(
 fn parse_workbook<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     rels: &HashMap<String, String>,
-) -> Result<Vec<SheetInfo>, XlsxError> {
+) -> Result<(Vec<SheetInfo>, Vec<DefinedName>), XlsxError> {
     let file = archive.by_name("xl/workbook.xml")?;
     let mut reader = Reader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
     let mut sheets = Vec::new();
+    let mut defined_names = Vec::new();
+
+    // State for parsing <definedName> elements
+    let mut in_defined_name = false;
+    let mut dn_name = String::new();
+    let mut dn_sheet_index: Option<usize> = None;
+    let mut dn_value = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -237,6 +264,38 @@ fn parse_workbook<R: Read + Seek>(
                     sheets.push(SheetInfo { name, path, state });
                 }
             }
+            Ok(Event::Start(ref e)) if e.name().as_ref() == b"definedName" => {
+                in_defined_name = true;
+                dn_name.clear();
+                dn_sheet_index = None;
+                dn_value.clear();
+
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"name" => dn_name = String::from_utf8_lossy(&attr.value).to_string(),
+                        b"localSheetId" => {
+                            dn_sheet_index =
+                                String::from_utf8_lossy(&attr.value).parse::<usize>().ok();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::Text(ref e)) if in_defined_name => {
+                if let Ok(text) = e.unescape() {
+                    dn_value.push_str(&text);
+                }
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"definedName" => {
+                if in_defined_name && !dn_name.is_empty() && !dn_value.is_empty() {
+                    defined_names.push(DefinedName {
+                        name: std::mem::take(&mut dn_name),
+                        value: std::mem::take(&mut dn_value),
+                        sheet_index: dn_sheet_index.take(),
+                    });
+                }
+                in_defined_name = false;
+            }
             Ok(Event::Eof) => break,
             Err(e) => return Err(XlsxError::Xml(e)),
             _ => {}
@@ -244,7 +303,7 @@ fn parse_workbook<R: Read + Seek>(
         buf.clear();
     }
 
-    Ok(sheets)
+    Ok((sheets, defined_names))
 }
 
 /// Parse xl/sharedStrings.xml to build the shared string table.
