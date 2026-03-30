@@ -56,6 +56,17 @@ class XlsxWriter:
     ) -> None:
         """Write a row of values to the current sheet."""
         ...
+    def write_rows(
+        self,
+        rows: list[list[str | int | float | bool | datetime.date | datetime.datetime | Formula | FormattedCell | StyledCell | None]],
+    ) -> None:
+        """Write multiple rows at once, minimizing FFI overhead.
+
+        Each element of ``rows`` should be a list of cell values.
+        Equivalent to calling ``write_row()`` for each row, but faster
+        because it crosses the Python→Rust boundary only once.
+        """
+        ...
     def merge_cells(self, range: str) -> None:
         """Merge a range of cells (e.g. ``"A1:C1"``)."""
         ...

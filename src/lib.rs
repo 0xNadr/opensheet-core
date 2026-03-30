@@ -1,5 +1,8 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDate, PyDateTime, PyDict, PyFloat, PyInt, PyList, PyNone, PyString};
+use pyo3::types::{
+    PyBool, PyDate, PyDateAccess, PyDateTime, PyDict, PyFloat, PyInt, PyList, PyNone, PyString,
+    PyTimeAccess,
+};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
@@ -111,34 +114,78 @@ fn cell_style_to_py(_py: Python<'_>, style: &types::CellStyle) -> PyResult<CellS
 }
 
 /// Convert rows to a Python list of lists.
+/// Pre-allocates inner lists with known capacity to avoid repeated reallocation.
 fn rows_to_py(py: Python<'_>, rows: &[Vec<CellValue>]) -> PyResult<Py<PyAny>> {
-    let py_rows = PyList::empty(py);
+    let mut outer: Vec<Py<PyAny>> = Vec::with_capacity(rows.len());
     for row in rows {
-        let py_row = PyList::empty(py);
+        let mut py_cells: Vec<Py<PyAny>> = Vec::with_capacity(row.len());
         for cell in row {
-            py_row.append(cell_to_py(py, cell)?)?;
+            py_cells.push(cell_to_py(py, cell)?);
         }
-        py_rows.append(py_row)?;
+        let py_row = PyList::new(py, &py_cells)?;
+        outer.push(py_row.into_any().unbind());
     }
+    let py_rows = PyList::new(py, &outer)?;
     Ok(py_rows.into_any().unbind())
 }
 
 /// Convert a Python value to a CellValue.
+///
+/// Type checks are ordered by frequency: most common types first to minimize
+/// failed extract() calls in the hot path.
 fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
     if obj.is_none() {
-        CellValue::Empty
-    } else if let Ok(sc) = obj.extract::<PyRef<'_, StyledCell>>() {
+        return CellValue::Empty;
+    }
+    // --- Common types first (Bool must precede Int since bool is a subclass of int in Python) ---
+    if let Ok(b) = obj.cast::<PyBool>() {
+        return CellValue::Bool(b.is_true());
+    }
+    if let Ok(i) = obj.cast::<PyInt>() {
+        return match i.extract::<i64>() {
+            Ok(v) => CellValue::Number(v as f64),
+            Err(_) => CellValue::String(i.to_string()),
+        };
+    }
+    if let Ok(f) = obj.cast::<PyFloat>() {
+        return CellValue::Number(f.value());
+    }
+    if let Ok(s) = obj.cast::<PyString>() {
+        return CellValue::String(s.to_string());
+    }
+    // --- Date types (DateTime must precede Date since datetime is a subclass of date) ---
+    if let Ok(dt) = obj.cast::<PyDateTime>() {
+        // Use PyDateAccess/PyTimeAccess direct C-level accessors (no Python getattr overhead)
+        return CellValue::DateTime {
+            year: dt.get_year(),
+            month: dt.get_month() as u32,
+            day: dt.get_day() as u32,
+            hour: dt.get_hour() as u32,
+            minute: dt.get_minute() as u32,
+            second: dt.get_second() as u32,
+            microsecond: dt.get_microsecond(),
+        };
+    }
+    if let Ok(d) = obj.cast::<PyDate>() {
+        return CellValue::Date {
+            year: d.get_year(),
+            month: d.get_month() as u32,
+            day: d.get_day() as u32,
+        };
+    }
+    // --- Rare wrapper types last ---
+    if let Ok(sc) = obj.extract::<PyRef<'_, StyledCell>>() {
         let py = obj.py();
         let inner = sc.value.bind(py);
         let inner_cell = py_to_cell(inner);
         let style_ref: PyRef<'_, CellStyle> = sc.style.bind(py).extract().unwrap();
         let cell_style = py_cell_style_to_rust(&style_ref);
-        CellValue::StyledCell {
+        return CellValue::StyledCell {
             value: Box::new(inner_cell),
             style: Box::new(cell_style),
-        }
-    } else if let Ok(fc) = obj.extract::<PyRef<'_, FormattedCell>>() {
-        // Extract the numeric value from the inner value
+        };
+    }
+    if let Ok(fc) = obj.extract::<PyRef<'_, FormattedCell>>() {
         let py = obj.py();
         let inner = fc.value.bind(py);
         let value = if let Ok(i) = inner.cast::<PyInt>() {
@@ -151,11 +198,12 @@ fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
         } else {
             0.0
         };
-        CellValue::FormattedNumber {
+        return CellValue::FormattedNumber {
             value,
             format_code: fc.number_format.clone(),
-        }
-    } else if let Ok(f) = obj.extract::<PyRef<'_, Formula>>() {
+        };
+    }
+    if let Ok(f) = obj.extract::<PyRef<'_, Formula>>() {
         let py = obj.py();
         let cached = f.cached_value.as_ref().and_then(|v| {
             let bound = v.bind(py);
@@ -165,47 +213,12 @@ fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
                 Some(Box::new(py_to_cell(bound)))
             }
         });
-        CellValue::Formula {
+        return CellValue::Formula {
             formula: f.formula.clone(),
             cached_value: cached,
-        }
-    } else if let Ok(dt) = obj.cast::<PyDateTime>() {
-        // Must check datetime before date since datetime is a subclass of date
-        let year: i32 = dt.getattr("year").unwrap().extract().unwrap_or(1900);
-        let month: u32 = dt.getattr("month").unwrap().extract().unwrap_or(1);
-        let day: u32 = dt.getattr("day").unwrap().extract().unwrap_or(1);
-        let hour: u32 = dt.getattr("hour").unwrap().extract().unwrap_or(0);
-        let minute: u32 = dt.getattr("minute").unwrap().extract().unwrap_or(0);
-        let second: u32 = dt.getattr("second").unwrap().extract().unwrap_or(0);
-        let microsecond: u32 = dt.getattr("microsecond").unwrap().extract().unwrap_or(0);
-        CellValue::DateTime {
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            microsecond,
-        }
-    } else if let Ok(d) = obj.cast::<PyDate>() {
-        let year: i32 = d.getattr("year").unwrap().extract().unwrap_or(1900);
-        let month: u32 = d.getattr("month").unwrap().extract().unwrap_or(1);
-        let day: u32 = d.getattr("day").unwrap().extract().unwrap_or(1);
-        CellValue::Date { year, month, day }
-    } else if let Ok(b) = obj.cast::<PyBool>() {
-        CellValue::Bool(b.is_true())
-    } else if let Ok(i) = obj.cast::<PyInt>() {
-        match i.extract::<i64>() {
-            Ok(v) => CellValue::Number(v as f64),
-            Err(_) => CellValue::String(i.to_string()),
-        }
-    } else if let Ok(f) = obj.cast::<PyFloat>() {
-        CellValue::Number(f.value())
-    } else if let Ok(s) = obj.cast::<PyString>() {
-        CellValue::String(s.to_string())
-    } else {
-        CellValue::String(obj.to_string())
+        };
     }
+    CellValue::String(obj.to_string())
 }
 
 /// Convert a Python CellStyle to a Rust CellStyle.
@@ -793,6 +806,27 @@ impl XlsxWriter {
 
         let cells: Vec<CellValue> = row.iter().map(|item| py_to_cell(&item)).collect();
         w.write_row(&cells)?;
+        Ok(())
+    }
+
+    /// Write multiple rows at once, minimizing Python→Rust FFI crossings.
+    ///
+    /// Each element of `rows` should be a list of cell values.
+    fn write_rows(&mut self, rows: &Bound<'_, PyList>) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+
+        for row_obj in rows.iter() {
+            let row_list = row_obj.cast::<PyList>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err(
+                    "Each element of rows must be a list",
+                )
+            })?;
+            let cells: Vec<CellValue> = row_list.iter().map(|item| py_to_cell(&item)).collect();
+            w.write_row(&cells)?;
+        }
         Ok(())
     }
 
