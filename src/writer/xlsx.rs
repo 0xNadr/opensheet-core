@@ -5,7 +5,7 @@ use zip::ZipWriter;
 
 use std::collections::HashMap;
 
-use crate::types::{datetime_to_excel_serial, CellValue};
+use crate::types::{datetime_to_excel_serial, CellStyle, CellValue};
 
 /// Errors that can occur during XLSX writing.
 #[derive(Debug)]
@@ -43,6 +43,80 @@ impl From<XlsxWriteError> for pyo3::PyErr {
     }
 }
 
+// ---------- Internal style registry types ----------
+
+#[derive(Debug, Clone, PartialEq)]
+struct FontDef {
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    name: String,
+    size: f64,
+    color: Option<String>,
+}
+
+impl Default for FontDef {
+    fn default() -> Self {
+        FontDef {
+            bold: false,
+            italic: false,
+            underline: false,
+            name: "Calibri".to_string(),
+            size: 11.0,
+            color: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FillDef {
+    pattern_type: String,
+    fg_color: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BorderSideDef {
+    style: String,
+    color: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+struct BorderDef {
+    left: Option<BorderSideDef>,
+    right: Option<BorderSideDef>,
+    top: Option<BorderSideDef>,
+    bottom: Option<BorderSideDef>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AlignmentDef {
+    horizontal: Option<String>,
+    vertical: Option<String>,
+    wrap_text: bool,
+    text_rotation: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct XfDef {
+    font_id: usize,
+    fill_id: usize,
+    border_id: usize,
+    num_fmt_id: u32,
+    alignment: Option<AlignmentDef>,
+}
+
+/// Normalize a hex color string to AARRGGBB format.
+fn normalize_color(color: &str) -> String {
+    let color = color.trim_start_matches('#');
+    if color.len() == 6 {
+        format!("FF{}", color.to_uppercase())
+    } else {
+        color.to_uppercase()
+    }
+}
+
+// ---------- Writer types ----------
+
 /// Tracks info about each sheet for writing workbook metadata at the end.
 struct SheetEntry {
     name: String,
@@ -71,15 +145,14 @@ pub struct StreamingXlsxWriter<W: Write + Seek> {
     pending_row_heights: HashMap<u32, f64>,
     pending_freeze_pane: Option<(u32, u32)>,
     pending_auto_filter: Option<String>,
-    /// Custom number format codes registered during writing.
-    /// Each entry is (format_code, numFmtId, xfId).
-    custom_num_fmts: Vec<(String, u32, u32)>,
-    /// Maps format_code -> xfId for quick lookup.
-    format_to_xf: HashMap<String, u32>,
-    /// Next available numFmtId for custom formats (starts at 166, after date 164 and datetime 165).
+    // Style registries
+    fonts: Vec<FontDef>,
+    fills: Vec<FillDef>,
+    borders: Vec<BorderDef>,
+    xfs: Vec<XfDef>,
+    num_fmts: Vec<(u32, String)>,
+    num_fmt_map: HashMap<String, u32>,
     next_num_fmt_id: u32,
-    /// Next available xfId (starts at 3, after general 0, date 1, datetime 2).
-    next_xf_id: u32,
 }
 
 impl<W: Write + Seek> StreamingXlsxWriter<W> {
@@ -98,10 +171,47 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             pending_row_heights: HashMap::new(),
             pending_freeze_pane: None,
             pending_auto_filter: None,
-            custom_num_fmts: Vec::new(),
-            format_to_xf: HashMap::new(),
+            fonts: vec![FontDef::default()],
+            fills: vec![
+                FillDef {
+                    pattern_type: "none".to_string(),
+                    fg_color: None,
+                },
+                FillDef {
+                    pattern_type: "gray125".to_string(),
+                    fg_color: None,
+                },
+            ],
+            borders: vec![BorderDef::default()],
+            xfs: vec![
+                // XF 0: general
+                XfDef {
+                    font_id: 0,
+                    fill_id: 0,
+                    border_id: 0,
+                    num_fmt_id: 0,
+                    alignment: None,
+                },
+                // XF 1: date format (numFmt 164)
+                XfDef {
+                    font_id: 0,
+                    fill_id: 0,
+                    border_id: 0,
+                    num_fmt_id: 164,
+                    alignment: None,
+                },
+                // XF 2: datetime format (numFmt 165)
+                XfDef {
+                    font_id: 0,
+                    fill_id: 0,
+                    border_id: 0,
+                    num_fmt_id: 165,
+                    alignment: None,
+                },
+            ],
+            num_fmts: vec![],
+            num_fmt_map: HashMap::new(),
             next_num_fmt_id: 166,
-            next_xf_id: 3,
         }
     }
 
@@ -240,94 +350,144 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             let col_letter = col_index_to_letter(col_idx);
             let cell_ref = format!("{col_letter}{row_num}");
 
-            match cell {
-                CellValue::String(s) => {
-                    let escaped = xml_escape(s);
-                    write!(
-                        self.zip()?,
-                        "<c r=\"{cell_ref}\" t=\"inlineStr\"><is><t>{escaped}</t></is></c>"
-                    )?;
-                }
-                CellValue::Number(n) => {
-                    write!(self.zip()?, "<c r=\"{cell_ref}\"><v>{n}</v></c>")?;
-                }
-                CellValue::Bool(b) => {
-                    let val = if *b { "1" } else { "0" };
-                    write!(self.zip()?, "<c r=\"{cell_ref}\" t=\"b\"><v>{val}</v></c>")?;
-                }
-                CellValue::Formula {
-                    formula,
-                    cached_value,
-                } => {
-                    let escaped_formula = xml_escape(formula);
-                    match cached_value.as_deref() {
-                        Some(CellValue::Number(n)) => {
-                            write!(
-                                self.zip()?,
-                                "<c r=\"{cell_ref}\"><f>{escaped_formula}</f><v>{n}</v></c>"
-                            )?;
+            // Unwrap StyledCell to get inner value and style override
+            let (inner, style_id) = match cell {
+                CellValue::StyledCell { value, style } => {
+                    // For Date/DateTime inner values, ensure the style includes
+                    // the appropriate date/datetime number format
+                    let mut style = style.clone();
+                    match value.as_ref() {
+                        CellValue::Date { .. } if style.number_format.is_none() => {
+                            style.number_format = Some("yyyy\\-mm\\-dd".to_string());
                         }
-                        Some(CellValue::String(s)) => {
-                            let escaped_val = xml_escape(s);
-                            write!(
-                                self.zip()?,
-                                "<c r=\"{cell_ref}\" t=\"str\"><f>{escaped_formula}</f><v>{escaped_val}</v></c>"
-                            )?;
+                        CellValue::DateTime { .. } if style.number_format.is_none() => {
+                            style.number_format =
+                                Some("yyyy\\-mm\\-dd\\ hh:mm:ss".to_string());
                         }
-                        _ => {
-                            write!(
-                                self.zip()?,
-                                "<c r=\"{cell_ref}\"><f>{escaped_formula}</f></c>"
-                            )?;
-                        }
+                        _ => {}
                     }
+                    let id = self.register_cell_style(&style);
+                    (value.as_ref(), Some(id))
                 }
-                CellValue::Date { year, month, day } => {
-                    let serial = datetime_to_excel_serial(*year, *month, *day, 0, 0, 0, 0);
-                    // Style index 1 = date format
-                    write!(
-                        self.zip()?,
-                        "<c r=\"{cell_ref}\" s=\"1\"><v>{serial}</v></c>"
-                    )?;
-                    self.has_dates = true;
-                }
-                CellValue::DateTime {
-                    year,
-                    month,
-                    day,
-                    hour,
-                    minute,
-                    second,
-                    microsecond,
-                } => {
-                    let serial = datetime_to_excel_serial(
-                        *year,
-                        *month,
-                        *day,
-                        *hour,
-                        *minute,
-                        *second,
-                        *microsecond,
-                    );
-                    // Style index 2 = datetime format
-                    write!(
-                        self.zip()?,
-                        "<c r=\"{cell_ref}\" s=\"2\"><v>{serial}</v></c>"
-                    )?;
-                    self.has_datetimes = true;
-                }
-                CellValue::FormattedNumber { value, format_code } => {
-                    let xf_id = self.register_format(format_code);
-                    write!(
-                        self.zip()?,
-                        "<c r=\"{cell_ref}\" s=\"{xf_id}\"><v>{value}</v></c>"
-                    )?;
-                }
-                CellValue::Empty => {}
-            }
+                other => (other, None),
+            };
+
+            self.write_single_cell(&cell_ref, inner, style_id)?;
         }
 
         write!(self.zip()?, "</row>")?;
+        Ok(())
+    }
+
+    /// Write a single cell value with an optional style override.
+    fn write_single_cell(
+        &mut self,
+        cell_ref: &str,
+        cell: &CellValue,
+        style_id: Option<u32>,
+    ) -> Result<(), XlsxWriteError> {
+        let s_attr = style_id
+            .map(|id| format!(" s=\"{id}\""))
+            .unwrap_or_default();
+
+        match cell {
+            CellValue::String(s) => {
+                let escaped = xml_escape(s);
+                write!(
+                    self.zip()?,
+                    "<c r=\"{cell_ref}\" t=\"inlineStr\"{s_attr}><is><t>{escaped}</t></is></c>"
+                )?;
+            }
+            CellValue::Number(n) => {
+                write!(
+                    self.zip()?,
+                    "<c r=\"{cell_ref}\"{s_attr}><v>{n}</v></c>"
+                )?;
+            }
+            CellValue::Bool(b) => {
+                let val = if *b { "1" } else { "0" };
+                write!(
+                    self.zip()?,
+                    "<c r=\"{cell_ref}\" t=\"b\"{s_attr}><v>{val}</v></c>"
+                )?;
+            }
+            CellValue::Formula {
+                formula,
+                cached_value,
+            } => {
+                let escaped_formula = xml_escape(formula);
+                match cached_value.as_deref() {
+                    Some(CellValue::Number(n)) => {
+                        write!(
+                            self.zip()?,
+                            "<c r=\"{cell_ref}\"{s_attr}><f>{escaped_formula}</f><v>{n}</v></c>"
+                        )?;
+                    }
+                    Some(CellValue::String(s)) => {
+                        let escaped_val = xml_escape(s);
+                        write!(
+                            self.zip()?,
+                            "<c r=\"{cell_ref}\" t=\"str\"{s_attr}><f>{escaped_formula}</f><v>{escaped_val}</v></c>"
+                        )?;
+                    }
+                    _ => {
+                        write!(
+                            self.zip()?,
+                            "<c r=\"{cell_ref}\"{s_attr}><f>{escaped_formula}</f></c>"
+                        )?;
+                    }
+                }
+            }
+            CellValue::Date { year, month, day } => {
+                let serial = datetime_to_excel_serial(*year, *month, *day, 0, 0, 0, 0);
+                let sid = style_id.unwrap_or(1); // Default: XF 1 = date format
+                write!(
+                    self.zip()?,
+                    "<c r=\"{cell_ref}\" s=\"{sid}\"><v>{serial}</v></c>"
+                )?;
+                self.has_dates = true;
+            }
+            CellValue::DateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                microsecond,
+            } => {
+                let serial = datetime_to_excel_serial(
+                    *year,
+                    *month,
+                    *day,
+                    *hour,
+                    *minute,
+                    *second,
+                    *microsecond,
+                );
+                let sid = style_id.unwrap_or(2); // Default: XF 2 = datetime format
+                write!(
+                    self.zip()?,
+                    "<c r=\"{cell_ref}\" s=\"{sid}\"><v>{serial}</v></c>"
+                )?;
+                self.has_datetimes = true;
+            }
+            CellValue::FormattedNumber { value, format_code } => {
+                let xf_id = if style_id.is_some() {
+                    style_id.unwrap()
+                } else {
+                    self.register_format(format_code)
+                };
+                write!(
+                    self.zip()?,
+                    "<c r=\"{cell_ref}\" s=\"{xf_id}\"><v>{value}</v></c>"
+                )?;
+            }
+            CellValue::StyledCell { .. } => {
+                // Should not happen — StyledCell is unwrapped before calling this
+            }
+            CellValue::Empty => {}
+        }
         Ok(())
     }
 
@@ -387,22 +547,6 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         Ok(())
     }
 
-    /// Register a custom number format and return its xf index.
-    /// If the format is already registered, returns the existing xf index.
-    fn register_format(&mut self, format_code: &str) -> u32 {
-        if let Some(&xf_id) = self.format_to_xf.get(format_code) {
-            return xf_id;
-        }
-        let num_fmt_id = self.next_num_fmt_id;
-        let xf_id = self.next_xf_id;
-        self.custom_num_fmts
-            .push((format_code.to_string(), num_fmt_id, xf_id));
-        self.format_to_xf.insert(format_code.to_string(), xf_id);
-        self.next_num_fmt_id += 1;
-        self.next_xf_id += 1;
-        xf_id
-    }
-
     /// Set the height of a row (0-based index) in points.
     pub fn set_row_height(&mut self, row_index: u32, height: f64) -> Result<(), XlsxWriteError> {
         if !self.sheet_open {
@@ -413,6 +557,144 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         self.pending_row_heights.insert(row_index, height);
         Ok(())
     }
+
+    // ---------- Style registry methods ----------
+
+    /// Register a custom number format and return its numFmtId.
+    fn register_num_fmt(&mut self, format_code: &str) -> u32 {
+        if let Some(&id) = self.num_fmt_map.get(format_code) {
+            return id;
+        }
+        let id = self.next_num_fmt_id;
+        self.num_fmts.push((id, format_code.to_string()));
+        self.num_fmt_map.insert(format_code.to_string(), id);
+        self.next_num_fmt_id += 1;
+        id
+    }
+
+    /// Register an XF entry and return its index. Deduplicates.
+    fn register_xf(&mut self, xf: &XfDef) -> u32 {
+        if let Some(idx) = self.xfs.iter().position(|x| x == xf) {
+            return idx as u32;
+        }
+        let idx = self.xfs.len() as u32;
+        self.xfs.push(xf.clone());
+        idx
+    }
+
+    /// Register a number format and return its xf index (for FormattedNumber backward compat).
+    fn register_format(&mut self, format_code: &str) -> u32 {
+        let num_fmt_id = self.register_num_fmt(format_code);
+        let xf = XfDef {
+            font_id: 0,
+            fill_id: 0,
+            border_id: 0,
+            num_fmt_id,
+            alignment: None,
+        };
+        self.register_xf(&xf)
+    }
+
+    /// Register a font from a CellStyle and return its fontId.
+    fn register_font(&mut self, style: &CellStyle) -> usize {
+        let font = FontDef {
+            bold: style.bold,
+            italic: style.italic,
+            underline: style.underline,
+            name: style
+                .font_name
+                .clone()
+                .unwrap_or_else(|| "Calibri".to_string()),
+            size: style.font_size.unwrap_or(11.0),
+            color: style.font_color.as_ref().map(|c| normalize_color(c)),
+        };
+        if let Some(idx) = self.fonts.iter().position(|f| f == &font) {
+            return idx;
+        }
+        self.fonts.push(font);
+        self.fonts.len() - 1
+    }
+
+    /// Register a fill from a CellStyle and return its fillId.
+    fn register_fill(&mut self, style: &CellStyle) -> usize {
+        if style.fill_color.is_none() {
+            return 0; // Default "none" fill
+        }
+        let fill = FillDef {
+            pattern_type: "solid".to_string(),
+            fg_color: style.fill_color.as_ref().map(|c| normalize_color(c)),
+        };
+        if let Some(idx) = self.fills.iter().position(|f| f == &fill) {
+            return idx;
+        }
+        self.fills.push(fill);
+        self.fills.len() - 1
+    }
+
+    /// Register a border from a CellStyle and return its borderId.
+    fn register_border(&mut self, style: &CellStyle) -> usize {
+        if style.border_left.is_none()
+            && style.border_right.is_none()
+            && style.border_top.is_none()
+            && style.border_bottom.is_none()
+        {
+            return 0; // Default empty border
+        }
+        let color = style.border_color.as_ref().map(|c| normalize_color(c));
+        let make_side = |s: &Option<String>| -> Option<BorderSideDef> {
+            s.as_ref().map(|st| BorderSideDef {
+                style: st.clone(),
+                color: color.clone(),
+            })
+        };
+        let border = BorderDef {
+            left: make_side(&style.border_left),
+            right: make_side(&style.border_right),
+            top: make_side(&style.border_top),
+            bottom: make_side(&style.border_bottom),
+        };
+        if let Some(idx) = self.borders.iter().position(|b| b == &border) {
+            return idx;
+        }
+        self.borders.push(border);
+        self.borders.len() - 1
+    }
+
+    /// Register a full cell style and return its xf index.
+    fn register_cell_style(&mut self, style: &CellStyle) -> u32 {
+        let font_id = self.register_font(style);
+        let fill_id = self.register_fill(style);
+        let border_id = self.register_border(style);
+        let num_fmt_id = if let Some(ref fmt) = style.number_format {
+            self.register_num_fmt(fmt)
+        } else {
+            0
+        };
+        let alignment = if style.horizontal_alignment.is_some()
+            || style.vertical_alignment.is_some()
+            || style.wrap_text
+            || style.text_rotation.is_some()
+        {
+            Some(AlignmentDef {
+                horizontal: style.horizontal_alignment.clone(),
+                vertical: style.vertical_alignment.clone(),
+                wrap_text: style.wrap_text,
+                text_rotation: style.text_rotation,
+            })
+        } else {
+            None
+        };
+        let xf = XfDef {
+            font_id,
+            fill_id,
+            border_id,
+            num_fmt_id,
+            alignment,
+        };
+        self.register_xf(&xf)
+    }
+
+    // ---------- Sheet/file lifecycle ----------
 
     /// Close the current sheet's XML.
     fn close_sheet(&mut self) -> Result<(), XlsxWriteError> {
@@ -547,51 +829,174 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
              </Relationships>"
         )?;
 
-        // Write xl/styles.xml with date/datetime formats and any custom number formats
+        // Write xl/styles.xml
         self.zip()?.start_file("xl/styles.xml", options)?;
-        let custom_fmts = std::mem::take(&mut self.custom_num_fmts);
-        let num_fmts_count = 2 + custom_fmts.len();
-        let cell_xfs_count = 3 + custom_fmts.len();
-        write!(
-            self.zip()?,
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
-             <styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\
-             <numFmts count=\"{num_fmts_count}\">\
-             <numFmt numFmtId=\"164\" formatCode=\"yyyy\\-mm\\-dd\"/>\
-             <numFmt numFmtId=\"165\" formatCode=\"yyyy\\-mm\\-dd\\ hh:mm:ss\"/>"
-        )?;
-        for (format_code, num_fmt_id, _xf_id) in &custom_fmts {
-            let escaped = xml_escape(format_code);
-            write!(
-                self.zip()?,
-                "<numFmt numFmtId=\"{num_fmt_id}\" formatCode=\"{escaped}\"/>"
-            )?;
-        }
-        write!(
-            self.zip()?,
-            "</numFmts>\
-             <fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>\
-             <fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills>\
-             <borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>\
-             <cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\
-             <cellXfs count=\"{cell_xfs_count}\">\
-             <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>\
-             <xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>\
-             <xf numFmtId=\"165\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>"
-        )?;
-        for (_format_code, num_fmt_id, _xf_id) in &custom_fmts {
-            write!(
-                self.zip()?,
-                "<xf numFmtId=\"{num_fmt_id}\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>"
-            )?;
-        }
-        write!(self.zip()?, "</cellXfs></styleSheet>")?;
+        self.write_styles_xml()?;
 
         // Take ownership of the ZipWriter to call finish()
         let zip = self.zip.take().unwrap();
         zip.finish()?;
         Ok(())
     }
+
+    /// Write the xl/styles.xml file with all registered styles.
+    fn write_styles_xml(&mut self) -> Result<(), XlsxWriteError> {
+        // Take ownership of style data
+        let fonts = std::mem::take(&mut self.fonts);
+        let fills = std::mem::take(&mut self.fills);
+        let borders = std::mem::take(&mut self.borders);
+        let xfs = std::mem::take(&mut self.xfs);
+        let num_fmts = std::mem::take(&mut self.num_fmts);
+
+        // numFmts: always include date (164) and datetime (165) plus custom ones
+        let total_num_fmts = 2 + num_fmts.len();
+
+        write!(
+            self.zip()?,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+             <styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\
+             <numFmts count=\"{total_num_fmts}\">\
+             <numFmt numFmtId=\"164\" formatCode=\"yyyy\\-mm\\-dd\"/>\
+             <numFmt numFmtId=\"165\" formatCode=\"yyyy\\-mm\\-dd\\ hh:mm:ss\"/>"
+        )?;
+        for (num_fmt_id, format_code) in &num_fmts {
+            let escaped = xml_escape(format_code);
+            write!(
+                self.zip()?,
+                "<numFmt numFmtId=\"{num_fmt_id}\" formatCode=\"{escaped}\"/>"
+            )?;
+        }
+        write!(self.zip()?, "</numFmts>")?;
+
+        // Fonts
+        write!(self.zip()?, "<fonts count=\"{}\">", fonts.len())?;
+        for font in &fonts {
+            write!(self.zip()?, "<font>")?;
+            if font.bold {
+                write!(self.zip()?, "<b/>")?;
+            }
+            if font.italic {
+                write!(self.zip()?, "<i/>")?;
+            }
+            if font.underline {
+                write!(self.zip()?, "<u/>")?;
+            }
+            write!(self.zip()?, "<sz val=\"{}\"/>", font.size)?;
+            if let Some(ref color) = font.color {
+                write!(self.zip()?, "<color rgb=\"{color}\"/>")?;
+            }
+            let escaped_name = xml_escape(&font.name);
+            write!(self.zip()?, "<name val=\"{escaped_name}\"/>")?;
+            write!(self.zip()?, "</font>")?;
+        }
+        write!(self.zip()?, "</fonts>")?;
+
+        // Fills
+        write!(self.zip()?, "<fills count=\"{}\">", fills.len())?;
+        for fill in &fills {
+            if let Some(ref color) = fill.fg_color {
+                write!(
+                    self.zip()?,
+                    "<fill><patternFill patternType=\"{}\"><fgColor rgb=\"{color}\"/></patternFill></fill>",
+                    fill.pattern_type
+                )?;
+            } else {
+                write!(
+                    self.zip()?,
+                    "<fill><patternFill patternType=\"{}\"/></fill>",
+                    fill.pattern_type
+                )?;
+            }
+        }
+        write!(self.zip()?, "</fills>")?;
+
+        // Borders
+        write!(self.zip()?, "<borders count=\"{}\">", borders.len())?;
+        for border in &borders {
+            write!(self.zip()?, "<border>")?;
+            write_border_side(self.zip()?, "left", &border.left)?;
+            write_border_side(self.zip()?, "right", &border.right)?;
+            write_border_side(self.zip()?, "top", &border.top)?;
+            write_border_side(self.zip()?, "bottom", &border.bottom)?;
+            write!(self.zip()?, "<diagonal/></border>")?;
+        }
+        write!(self.zip()?, "</borders>")?;
+
+        // cellStyleXfs
+        write!(
+            self.zip()?,
+            "<cellStyleXfs count=\"1\">\
+             <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/>\
+             </cellStyleXfs>"
+        )?;
+
+        // cellXfs
+        write!(self.zip()?, "<cellXfs count=\"{}\">", xfs.len())?;
+        for xf in &xfs {
+            write!(
+                self.zip()?,
+                "<xf numFmtId=\"{}\" fontId=\"{}\" fillId=\"{}\" borderId=\"{}\" xfId=\"0\"",
+                xf.num_fmt_id, xf.font_id, xf.fill_id, xf.border_id
+            )?;
+            if xf.num_fmt_id != 0 {
+                write!(self.zip()?, " applyNumberFormat=\"1\"")?;
+            }
+            if xf.font_id != 0 {
+                write!(self.zip()?, " applyFont=\"1\"")?;
+            }
+            if xf.fill_id != 0 {
+                write!(self.zip()?, " applyFill=\"1\"")?;
+            }
+            if xf.border_id != 0 {
+                write!(self.zip()?, " applyBorder=\"1\"")?;
+            }
+            if xf.alignment.is_some() {
+                write!(self.zip()?, " applyAlignment=\"1\"")?;
+            }
+            if let Some(ref align) = xf.alignment {
+                write!(self.zip()?, "><alignment")?;
+                if let Some(ref h) = align.horizontal {
+                    write!(self.zip()?, " horizontal=\"{h}\"")?;
+                }
+                if let Some(ref v) = align.vertical {
+                    write!(self.zip()?, " vertical=\"{v}\"")?;
+                }
+                if align.wrap_text {
+                    write!(self.zip()?, " wrapText=\"1\"")?;
+                }
+                if let Some(rot) = align.text_rotation {
+                    write!(self.zip()?, " textRotation=\"{rot}\"")?;
+                }
+                write!(self.zip()?, "/></xf>")?;
+            } else {
+                write!(self.zip()?, "/>")?;
+            }
+        }
+        write!(self.zip()?, "</cellXfs></styleSheet>")?;
+
+        Ok(())
+    }
+}
+
+/// Write a single border side element.
+fn write_border_side<W: Write>(
+    w: &mut W,
+    name: &str,
+    side: &Option<BorderSideDef>,
+) -> Result<(), std::io::Error> {
+    match side {
+        Some(def) => {
+            write!(w, "<{name} style=\"{}\">", def.style)?;
+            if let Some(ref color) = def.color {
+                write!(w, "<color rgb=\"{color}\"/>")?;
+            }
+            write!(w, "</{name}>")?;
+        }
+        None => {
+            write!(w, "<{name}/>")?;
+        }
+    }
+    Ok(())
 }
 
 /// Convert a 0-based column index to an Excel-style column letter (A, B, ..., Z, AA, AB, ...).
@@ -647,6 +1052,14 @@ mod tests {
         assert_eq!(xml_escape("a & b"), "a &amp; b");
         assert_eq!(xml_escape("<tag>"), "&lt;tag&gt;");
         assert_eq!(xml_escape("it's \"fine\""), "it&apos;s &quot;fine&quot;");
+    }
+
+    #[test]
+    fn test_normalize_color() {
+        assert_eq!(normalize_color("FF0000"), "FFFF0000");
+        assert_eq!(normalize_color("#00FF00"), "FF00FF00");
+        assert_eq!(normalize_color("FFFF0000"), "FFFF0000");
+        assert_eq!(normalize_color("ff0000"), "FFFF0000");
     }
 
     #[test]
@@ -934,5 +1347,159 @@ mod tests {
         buf.set_position(0);
         let sheets = read_xlsx(buf).unwrap();
         assert_eq!(sheets[0].auto_filter, None);
+    }
+
+    #[test]
+    fn test_styled_cell_bold_roundtrip() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Styled").unwrap();
+            writer
+                .write_row(&[CellValue::StyledCell {
+                    value: Box::new(CellValue::String("Bold text".to_string())),
+                    style: CellStyle {
+                        bold: true,
+                        ..CellStyle::default()
+                    },
+                }])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        match &sheets[0].rows[0][0] {
+            CellValue::StyledCell { value, style } => {
+                match value.as_ref() {
+                    CellValue::String(s) => assert_eq!(s, "Bold text"),
+                    other => panic!("expected String inside StyledCell, got {other:?}"),
+                }
+                assert!(style.bold);
+            }
+            other => panic!("expected StyledCell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_styled_cell_fill_roundtrip() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Styled").unwrap();
+            writer
+                .write_row(&[CellValue::StyledCell {
+                    value: Box::new(CellValue::Number(42.0)),
+                    style: CellStyle {
+                        fill_color: Some("FFFF00".to_string()),
+                        ..CellStyle::default()
+                    },
+                }])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        match &sheets[0].rows[0][0] {
+            CellValue::StyledCell { value, style } => {
+                match value.as_ref() {
+                    CellValue::Number(n) => assert!((n - 42.0).abs() < f64::EPSILON),
+                    other => panic!("expected Number inside StyledCell, got {other:?}"),
+                }
+                assert_eq!(style.fill_color.as_deref(), Some("FFFFFF00"));
+            }
+            other => panic!("expected StyledCell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_styled_cell_border_roundtrip() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Styled").unwrap();
+            writer
+                .write_row(&[CellValue::StyledCell {
+                    value: Box::new(CellValue::String("Bordered".to_string())),
+                    style: CellStyle {
+                        border_left: Some("thin".to_string()),
+                        border_right: Some("thin".to_string()),
+                        border_top: Some("thin".to_string()),
+                        border_bottom: Some("thin".to_string()),
+                        border_color: Some("000000".to_string()),
+                        ..CellStyle::default()
+                    },
+                }])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        match &sheets[0].rows[0][0] {
+            CellValue::StyledCell { value, style } => {
+                match value.as_ref() {
+                    CellValue::String(s) => assert_eq!(s, "Bordered"),
+                    other => panic!("expected String inside StyledCell, got {other:?}"),
+                }
+                assert_eq!(style.border_left.as_deref(), Some("thin"));
+                assert_eq!(style.border_right.as_deref(), Some("thin"));
+                assert_eq!(style.border_top.as_deref(), Some("thin"));
+                assert_eq!(style.border_bottom.as_deref(), Some("thin"));
+            }
+            other => panic!("expected StyledCell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_styled_cell_alignment_roundtrip() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Styled").unwrap();
+            writer
+                .write_row(&[CellValue::StyledCell {
+                    value: Box::new(CellValue::String("Centered".to_string())),
+                    style: CellStyle {
+                        horizontal_alignment: Some("center".to_string()),
+                        vertical_alignment: Some("top".to_string()),
+                        wrap_text: true,
+                        ..CellStyle::default()
+                    },
+                }])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        match &sheets[0].rows[0][0] {
+            CellValue::StyledCell { value, style } => {
+                match value.as_ref() {
+                    CellValue::String(s) => assert_eq!(s, "Centered"),
+                    other => panic!("expected String inside StyledCell, got {other:?}"),
+                }
+                assert_eq!(
+                    style.horizontal_alignment.as_deref(),
+                    Some("center")
+                );
+                assert_eq!(style.vertical_alignment.as_deref(), Some("top"));
+                assert!(style.wrap_text);
+            }
+            other => panic!("expected StyledCell, got {other:?}"),
+        }
     }
 }

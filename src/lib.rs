@@ -74,8 +74,40 @@ fn cell_to_py(py: Python<'_>, cell: &CellValue) -> PyResult<Py<PyAny>> {
             };
             Ok(fc.into_pyobject(py)?.into_any().unbind())
         }
+        CellValue::StyledCell { value, style } => {
+            let inner_py = cell_to_py(py, value)?;
+            let py_style = cell_style_to_py(py, style)?;
+            let sc = StyledCell {
+                value: inner_py,
+                style: Py::new(py, py_style)?,
+            };
+            Ok(sc.into_pyobject(py)?.into_any().unbind())
+        }
         CellValue::Empty => Ok(PyNone::get(py).to_owned().into_any().unbind()),
     }
+}
+
+/// Convert a Rust CellStyle to a Python CellStyle.
+fn cell_style_to_py(_py: Python<'_>, style: &types::CellStyle) -> PyResult<CellStyle> {
+    Ok(CellStyle {
+        bold: style.bold,
+        italic: style.italic,
+        underline: style.underline,
+        font_name: style.font_name.clone(),
+        font_size: style.font_size,
+        font_color: style.font_color.clone(),
+        fill_color: style.fill_color.clone(),
+        border_left: style.border_left.clone(),
+        border_right: style.border_right.clone(),
+        border_top: style.border_top.clone(),
+        border_bottom: style.border_bottom.clone(),
+        border_color: style.border_color.clone(),
+        horizontal_alignment: style.horizontal_alignment.clone(),
+        vertical_alignment: style.vertical_alignment.clone(),
+        wrap_text: style.wrap_text,
+        text_rotation: style.text_rotation,
+        number_format: style.number_format.clone(),
+    })
 }
 
 /// Convert rows to a Python list of lists.
@@ -95,6 +127,16 @@ fn rows_to_py(py: Python<'_>, rows: &[Vec<CellValue>]) -> PyResult<Py<PyAny>> {
 fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
     if obj.is_none() {
         CellValue::Empty
+    } else if let Ok(sc) = obj.extract::<PyRef<'_, StyledCell>>() {
+        let py = obj.py();
+        let inner = sc.value.bind(py);
+        let inner_cell = py_to_cell(inner);
+        let style_ref: PyRef<'_, CellStyle> = sc.style.bind(py).extract().unwrap();
+        let cell_style = py_cell_style_to_rust(&style_ref);
+        CellValue::StyledCell {
+            value: Box::new(inner_cell),
+            style: cell_style,
+        }
     } else if let Ok(fc) = obj.extract::<PyRef<'_, FormattedCell>>() {
         // Extract the numeric value from the inner value
         let py = obj.py();
@@ -163,6 +205,29 @@ fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
         CellValue::String(s.to_string())
     } else {
         CellValue::String(obj.to_string())
+    }
+}
+
+/// Convert a Python CellStyle to a Rust CellStyle.
+fn py_cell_style_to_rust(style: &CellStyle) -> types::CellStyle {
+    types::CellStyle {
+        bold: style.bold,
+        italic: style.italic,
+        underline: style.underline,
+        font_name: style.font_name.clone(),
+        font_size: style.font_size,
+        font_color: style.font_color.clone(),
+        fill_color: style.fill_color.clone(),
+        border_left: style.border_left.clone(),
+        border_right: style.border_right.clone(),
+        border_top: style.border_top.clone(),
+        border_bottom: style.border_bottom.clone(),
+        border_color: style.border_color.clone(),
+        horizontal_alignment: style.horizontal_alignment.clone(),
+        vertical_alignment: style.vertical_alignment.clone(),
+        wrap_text: style.wrap_text,
+        text_rotation: style.text_rotation,
+        number_format: style.number_format.clone(),
     }
 }
 
@@ -373,6 +438,240 @@ impl FormattedCell {
     }
 }
 
+/// Cell style properties for fonts, fills, borders, and alignment.
+///
+/// Usage:
+///     from opensheet_core import CellStyle
+///     style = CellStyle(bold=True, fill_color="FFFF00")
+///     style = CellStyle(border="thin", border_color="000000", horizontal_alignment="center")
+#[pyclass(skip_from_py_object)]
+#[derive(Clone)]
+struct CellStyle {
+    #[pyo3(get, set)]
+    bold: bool,
+    #[pyo3(get, set)]
+    italic: bool,
+    #[pyo3(get, set)]
+    underline: bool,
+    #[pyo3(get, set)]
+    font_name: Option<String>,
+    #[pyo3(get, set)]
+    font_size: Option<f64>,
+    #[pyo3(get, set)]
+    font_color: Option<String>,
+    #[pyo3(get, set)]
+    fill_color: Option<String>,
+    #[pyo3(get, set)]
+    border_left: Option<String>,
+    #[pyo3(get, set)]
+    border_right: Option<String>,
+    #[pyo3(get, set)]
+    border_top: Option<String>,
+    #[pyo3(get, set)]
+    border_bottom: Option<String>,
+    #[pyo3(get, set)]
+    border_color: Option<String>,
+    #[pyo3(get, set)]
+    horizontal_alignment: Option<String>,
+    #[pyo3(get, set)]
+    vertical_alignment: Option<String>,
+    #[pyo3(get, set)]
+    wrap_text: bool,
+    #[pyo3(get, set)]
+    text_rotation: Option<u16>,
+    #[pyo3(get, set)]
+    number_format: Option<String>,
+}
+
+#[pymethods]
+impl CellStyle {
+    #[new]
+    #[pyo3(signature = (
+        *,
+        bold = false,
+        italic = false,
+        underline = false,
+        font_name = None,
+        font_size = None,
+        font_color = None,
+        fill_color = None,
+        border = None,
+        border_left = None,
+        border_right = None,
+        border_top = None,
+        border_bottom = None,
+        border_color = None,
+        horizontal_alignment = None,
+        vertical_alignment = None,
+        wrap_text = false,
+        text_rotation = None,
+        number_format = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        font_name: Option<String>,
+        font_size: Option<f64>,
+        font_color: Option<String>,
+        fill_color: Option<String>,
+        border: Option<String>,
+        border_left: Option<String>,
+        border_right: Option<String>,
+        border_top: Option<String>,
+        border_bottom: Option<String>,
+        border_color: Option<String>,
+        horizontal_alignment: Option<String>,
+        vertical_alignment: Option<String>,
+        wrap_text: bool,
+        text_rotation: Option<u16>,
+        number_format: Option<String>,
+    ) -> Self {
+        // If `border` shorthand is set, apply it to any unset sides
+        let border_left = border_left.or_else(|| border.clone());
+        let border_right = border_right.or_else(|| border.clone());
+        let border_top = border_top.or_else(|| border.clone());
+        let border_bottom = border_bottom.or(border);
+
+        CellStyle {
+            bold,
+            italic,
+            underline,
+            font_name,
+            font_size,
+            font_color,
+            fill_color,
+            border_left,
+            border_right,
+            border_top,
+            border_bottom,
+            border_color,
+            horizontal_alignment,
+            vertical_alignment,
+            wrap_text,
+            text_rotation,
+            number_format,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let mut parts = Vec::new();
+        if self.bold {
+            parts.push("bold=True".to_string());
+        }
+        if self.italic {
+            parts.push("italic=True".to_string());
+        }
+        if self.underline {
+            parts.push("underline=True".to_string());
+        }
+        if let Some(ref name) = self.font_name {
+            parts.push(format!("font_name='{name}'"));
+        }
+        if let Some(size) = self.font_size {
+            parts.push(format!("font_size={size}"));
+        }
+        if let Some(ref color) = self.font_color {
+            parts.push(format!("font_color='{color}'"));
+        }
+        if let Some(ref color) = self.fill_color {
+            parts.push(format!("fill_color='{color}'"));
+        }
+        if self.border_left.is_some()
+            || self.border_right.is_some()
+            || self.border_top.is_some()
+            || self.border_bottom.is_some()
+        {
+            parts.push("border=...".to_string());
+        }
+        if let Some(ref h) = self.horizontal_alignment {
+            parts.push(format!("horizontal_alignment='{h}'"));
+        }
+        if let Some(ref v) = self.vertical_alignment {
+            parts.push(format!("vertical_alignment='{v}'"));
+        }
+        if self.wrap_text {
+            parts.push("wrap_text=True".to_string());
+        }
+        if let Some(rot) = self.text_rotation {
+            parts.push(format!("text_rotation={rot}"));
+        }
+        if let Some(ref fmt) = self.number_format {
+            parts.push(format!("number_format='{fmt}'"));
+        }
+        format!("CellStyle({})", parts.join(", "))
+    }
+
+    fn __eq__(&self, other: &CellStyle) -> bool {
+        self.bold == other.bold
+            && self.italic == other.italic
+            && self.underline == other.underline
+            && self.font_name == other.font_name
+            && self.font_size == other.font_size
+            && self.font_color == other.font_color
+            && self.fill_color == other.fill_color
+            && self.border_left == other.border_left
+            && self.border_right == other.border_right
+            && self.border_top == other.border_top
+            && self.border_bottom == other.border_bottom
+            && self.border_color == other.border_color
+            && self.horizontal_alignment == other.horizontal_alignment
+            && self.vertical_alignment == other.vertical_alignment
+            && self.wrap_text == other.wrap_text
+            && self.text_rotation == other.text_rotation
+            && self.number_format == other.number_format
+    }
+}
+
+/// A cell value with styling (fonts, fills, borders, alignment).
+///
+/// Usage:
+///     from opensheet_core import StyledCell, CellStyle
+///     cell = StyledCell("Hello", CellStyle(bold=True))
+///     cell = StyledCell(42, CellStyle(fill_color="FFFF00"))
+#[pyclass]
+struct StyledCell {
+    #[pyo3(get, set)]
+    value: Py<PyAny>,
+    #[pyo3(get, set)]
+    style: Py<CellStyle>,
+}
+
+#[pymethods]
+impl StyledCell {
+    #[new]
+    fn new(value: Py<PyAny>, style: Py<CellStyle>) -> Self {
+        StyledCell { value, style }
+    }
+
+    fn __repr__(&self) -> String {
+        Python::try_attach(|py| {
+            let style_repr = self.style.bind(py).call_method0("__repr__")?;
+            Ok::<String, PyErr>(format!(
+                "StyledCell(..., {})",
+                style_repr.extract::<String>()?
+            ))
+        })
+        .unwrap_or(Ok("StyledCell(...)".to_string()))
+        .unwrap_or("StyledCell(...)".to_string())
+    }
+
+    fn __eq__(&self, other: &StyledCell) -> PyResult<bool> {
+        let values_eq = Python::try_attach(|py| self.value.bind(py).eq(other.value.bind(py)))
+            .unwrap_or(Ok(false))?;
+        if !values_eq {
+            return Ok(false);
+        }
+        Python::try_attach(|py| {
+            let s1: PyRef<'_, CellStyle> = self.style.bind(py).extract()?;
+            let s2: PyRef<'_, CellStyle> = other.style.bind(py).extract()?;
+            Ok(s1.__eq__(&s2))
+        })
+        .unwrap_or(Ok(false))
+    }
+}
+
 /// Streaming XLSX writer.
 ///
 /// Usage:
@@ -538,5 +837,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<XlsxWriter>()?;
     m.add_class::<Formula>()?;
     m.add_class::<FormattedCell>()?;
+    m.add_class::<CellStyle>()?;
+    m.add_class::<StyledCell>()?;
     Ok(())
 }

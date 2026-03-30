@@ -1,3 +1,56 @@
+/// Cell style properties for fonts, fills, borders, and alignment.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CellStyle {
+    // Font properties
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub font_name: Option<std::string::String>,
+    pub font_size: Option<f64>,
+    pub font_color: Option<std::string::String>,
+
+    // Fill properties (solid fill)
+    pub fill_color: Option<std::string::String>,
+
+    // Border properties (style: "thin", "medium", "thick", "dashed", "dotted", "double", etc.)
+    pub border_left: Option<std::string::String>,
+    pub border_right: Option<std::string::String>,
+    pub border_top: Option<std::string::String>,
+    pub border_bottom: Option<std::string::String>,
+    pub border_color: Option<std::string::String>,
+
+    // Alignment properties
+    pub horizontal_alignment: Option<std::string::String>,
+    pub vertical_alignment: Option<std::string::String>,
+    pub wrap_text: bool,
+    pub text_rotation: Option<u16>,
+
+    // Number format (e.g. "$#,##0.00", "0.00%")
+    pub number_format: Option<std::string::String>,
+}
+
+impl CellStyle {
+    /// Returns true if any visual style property (font/fill/border/alignment) is set.
+    #[allow(dead_code)]
+    pub fn has_visual_styling(&self) -> bool {
+        self.bold
+            || self.italic
+            || self.underline
+            || self.font_name.is_some()
+            || self.font_size.is_some()
+            || self.font_color.is_some()
+            || self.fill_color.is_some()
+            || self.border_left.is_some()
+            || self.border_right.is_some()
+            || self.border_top.is_some()
+            || self.border_bottom.is_some()
+            || self.horizontal_alignment.is_some()
+            || self.vertical_alignment.is_some()
+            || self.wrap_text
+            || self.text_rotation.is_some()
+    }
+}
+
 /// Represents a single cell value from a spreadsheet.
 #[derive(Debug, Clone)]
 pub enum CellValue {
@@ -29,6 +82,11 @@ pub enum CellValue {
     FormattedNumber {
         value: f64,
         format_code: std::string::String,
+    },
+    /// A cell with styling (fonts, fills, borders, alignment).
+    StyledCell {
+        value: Box<CellValue>,
+        style: CellStyle,
     },
     Empty,
 }

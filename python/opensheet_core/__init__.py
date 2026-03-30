@@ -8,6 +8,8 @@ from opensheet_core._native import (
     XlsxWriter,
     Formula,
     FormattedCell,
+    CellStyle,
+    StyledCell,
 )
 __version__ = version()
 __all__ = [
@@ -18,6 +20,8 @@ __all__ = [
     "XlsxWriter",
     "Formula",
     "FormattedCell",
+    "CellStyle",
+    "StyledCell",
     "read_xlsx_df",
     "to_xlsx",
 ]

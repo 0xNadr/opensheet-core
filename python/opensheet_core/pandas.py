@@ -13,6 +13,7 @@ from opensheet_core._native import (
     XlsxWriter,
     Formula,
     FormattedCell,
+    StyledCell,
 )
 
 
@@ -53,6 +54,8 @@ def read_xlsx_df(
 
     # Unwrap Formula/FormattedCell to plain values
     def _unwrap(val):
+        if isinstance(val, StyledCell):
+            return _unwrap(val.value)
         if isinstance(val, Formula):
             return val.cached_value
         if isinstance(val, FormattedCell):

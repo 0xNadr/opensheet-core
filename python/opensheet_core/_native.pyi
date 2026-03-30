@@ -25,7 +25,7 @@ def read_sheet(
     path: str,
     sheet_name: str | None = None,
     sheet_index: int | None = None,
-) -> list[list[str | int | float | bool | datetime.date | datetime.datetime | Formula | None]]:
+) -> list[list[str | int | float | bool | datetime.date | datetime.datetime | Formula | FormattedCell | StyledCell | None]]:
     """Read a single sheet by name or index.
 
     Returns the first sheet by default.
@@ -52,7 +52,7 @@ class XlsxWriter:
         ...
     def write_row(
         self,
-        values: list[str | int | float | bool | datetime.date | datetime.datetime | Formula | FormattedCell | None],
+        values: list[str | int | float | bool | datetime.date | datetime.datetime | Formula | FormattedCell | StyledCell | None],
     ) -> None:
         """Write a row of values to the current sheet."""
         ...
@@ -119,5 +119,90 @@ class Formula:
     cached_value: Any | None
 
     def __init__(self, formula: str, cached_value: Any | None = None) -> None: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+
+class CellStyle:
+    """Cell style properties for fonts, fills, borders, and alignment.
+
+    All parameters are keyword-only. The ``border`` parameter is a shorthand
+    that sets all four border sides at once.
+
+    Args:
+        bold: Bold font.
+        italic: Italic font.
+        underline: Underlined font.
+        font_name: Font family name (e.g. ``"Arial"``).
+        font_size: Font size in points (e.g. ``12.0``).
+        font_color: Font color as hex string (``"RRGGBB"`` or ``"AARRGGBB"``).
+        fill_color: Solid fill color as hex string.
+        border: Shorthand to set all four border sides (e.g. ``"thin"``).
+        border_left: Left border style (e.g. ``"thin"``, ``"medium"``, ``"thick"``).
+        border_right: Right border style.
+        border_top: Top border style.
+        border_bottom: Bottom border style.
+        border_color: Border color as hex string (shared for all sides).
+        horizontal_alignment: Horizontal alignment (``"left"``, ``"center"``, ``"right"``).
+        vertical_alignment: Vertical alignment (``"top"``, ``"center"``, ``"bottom"``).
+        wrap_text: Enable text wrapping.
+        text_rotation: Text rotation in degrees (0-180).
+        number_format: Excel number format code (e.g. ``"$#,##0.00"``).
+    """
+
+    bold: bool
+    italic: bool
+    underline: bool
+    font_name: str | None
+    font_size: float | None
+    font_color: str | None
+    fill_color: str | None
+    border_left: str | None
+    border_right: str | None
+    border_top: str | None
+    border_bottom: str | None
+    border_color: str | None
+    horizontal_alignment: str | None
+    vertical_alignment: str | None
+    wrap_text: bool
+    text_rotation: int | None
+    number_format: str | None
+
+    def __init__(
+        self,
+        *,
+        bold: bool = False,
+        italic: bool = False,
+        underline: bool = False,
+        font_name: str | None = None,
+        font_size: float | None = None,
+        font_color: str | None = None,
+        fill_color: str | None = None,
+        border: str | None = None,
+        border_left: str | None = None,
+        border_right: str | None = None,
+        border_top: str | None = None,
+        border_bottom: str | None = None,
+        border_color: str | None = None,
+        horizontal_alignment: str | None = None,
+        vertical_alignment: str | None = None,
+        wrap_text: bool = False,
+        text_rotation: int | None = None,
+        number_format: str | None = None,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+
+class StyledCell:
+    """A cell value with styling (fonts, fills, borders, alignment).
+
+    Args:
+        value: The cell value (str, int, float, bool, date, datetime, Formula, or None).
+        style: A :class:`CellStyle` instance.
+    """
+
+    value: Any
+    style: CellStyle
+
+    def __init__(self, value: Any, style: CellStyle) -> None: ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...

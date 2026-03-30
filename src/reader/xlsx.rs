@@ -5,7 +5,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use zip::ZipArchive;
 
-use crate::types::{excel_serial_to_datetime, CellValue, Sheet};
+use crate::types::{excel_serial_to_datetime, CellStyle, CellValue, Sheet};
 
 /// Errors that can occur during XLSX reading.
 #[derive(Debug)]
@@ -70,7 +70,7 @@ pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<Vec<Sheet>, XlsxError> {
     // 3. Parse shared strings
     let shared_strings = parse_shared_strings(&mut archive)?;
 
-    // 4. Parse styles for date detection and number formats
+    // 4. Parse styles for date detection, number formats, and cell styling
     let styles = parse_styles(&mut archive)?;
 
     // 5. Parse each worksheet
@@ -235,16 +235,63 @@ fn parse_shared_strings<R: Read + Seek>(
     Ok(strings)
 }
 
+// ---------- Style parsing types ----------
+
+/// Parsed font info from styles.xml.
+#[derive(Debug, Clone, Default)]
+struct ParsedFont {
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    name: Option<String>,
+    size: Option<f64>,
+    color: Option<String>,
+}
+
+/// Parsed fill info from styles.xml.
+#[derive(Debug, Clone, Default)]
+struct ParsedFill {
+    pattern_type: Option<String>,
+    fg_color: Option<String>,
+}
+
+/// Parsed border side info.
+#[derive(Debug, Clone, Default)]
+struct ParsedBorderSide {
+    style: Option<String>,
+    color: Option<String>,
+}
+
+/// Parsed border info from styles.xml.
+#[derive(Debug, Clone, Default)]
+struct ParsedBorder {
+    left: ParsedBorderSide,
+    right: ParsedBorderSide,
+    top: ParsedBorderSide,
+    bottom: ParsedBorderSide,
+}
+
+/// Parsed alignment info from styles.xml.
+#[derive(Debug, Clone, Default)]
+struct ParsedAlignment {
+    horizontal: Option<String>,
+    vertical: Option<String>,
+    wrap_text: bool,
+    text_rotation: Option<u16>,
+}
+
 /// Style info for a single xf entry.
 #[derive(Debug, Clone)]
 struct StyleInfo {
     is_date: bool,
     /// The format code string, if it's a custom (non-built-in, non-date) format.
     format_code: Option<String>,
+    /// Cell style info, populated when the xf has non-default styling.
+    cell_style: Option<CellStyle>,
 }
 
-/// Parse xl/styles.xml to determine which cell style indices use date number formats.
-/// Returns style info per xf index.
+/// Parse xl/styles.xml to determine which cell style indices use date number formats
+/// and to extract font/fill/border/alignment information for cell styling.
 fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<StyleInfo>, XlsxError> {
     let file = match archive.by_name("xl/styles.xml") {
         Ok(f) => f,
@@ -256,24 +303,142 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
 
     // Custom number formats: numFmtId -> formatCode
     let mut custom_formats: HashMap<u32, String> = HashMap::new();
-    // The numFmtId for each xf in cellXfs
-    let mut xf_num_fmt_ids: Vec<u32> = Vec::new();
+
+    // Parsed style components
+    let mut parsed_fonts: Vec<ParsedFont> = Vec::new();
+    let mut parsed_fills: Vec<ParsedFill> = Vec::new();
+    let mut parsed_borders: Vec<ParsedBorder> = Vec::new();
+
+    // Per-xf data from cellXfs
+    struct XfData {
+        num_fmt_id: u32,
+        font_id: usize,
+        fill_id: usize,
+        border_id: usize,
+        alignment: Option<ParsedAlignment>,
+    }
+    let mut xf_entries: Vec<XfData> = Vec::new();
+
+    // Section tracking flags
     let mut in_num_fmts = false;
     let mut in_cell_xfs = false;
+    let mut in_fonts = false;
+    let mut in_font = false;
+    let mut in_fills = false;
+    let mut in_fill = false;
+    let mut in_pattern_fill = false;
+    let mut in_borders = false;
+    let mut in_border = false;
+    let mut in_xf = false;
+
+    // Current element being built
+    let mut current_font = ParsedFont::default();
+    let mut current_fill = ParsedFill::default();
+    let mut current_border = ParsedBorder::default();
+    let mut current_xf_data: Option<XfData> = None;
+
+    // Border side tracking: which side are we inside?
+    let mut current_border_side: u8 = 0; // 0=none, 1=left, 2=right, 3=top, 4=bottom
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"numFmts" => in_num_fmts = true,
-                b"cellXfs" => in_cell_xfs = true,
-                b"xf" if in_cell_xfs => {
-                    let mut num_fmt_id: u32 = 0;
+                b"fonts" => in_fonts = true,
+                b"font" if in_fonts => {
+                    in_font = true;
+                    current_font = ParsedFont::default();
+                }
+                b"fills" => in_fills = true,
+                b"fill" if in_fills => {
+                    in_fill = true;
+                    current_fill = ParsedFill::default();
+                }
+                b"patternFill" if in_fill => {
+                    in_pattern_fill = true;
                     for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"numFmtId" {
-                            num_fmt_id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                        if attr.key.as_ref() == b"patternType" {
+                            current_fill.pattern_type =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
                         }
                     }
-                    xf_num_fmt_ids.push(num_fmt_id);
+                }
+                b"borders" => in_borders = true,
+                b"border" if in_borders => {
+                    in_border = true;
+                    current_border = ParsedBorder::default();
+                }
+                b"left" if in_border => {
+                    current_border_side = 1;
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"style" {
+                            current_border.left.style =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                b"right" if in_border => {
+                    current_border_side = 2;
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"style" {
+                            current_border.right.style =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                b"top" if in_border => {
+                    current_border_side = 3;
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"style" {
+                            current_border.top.style =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                b"bottom" if in_border => {
+                    current_border_side = 4;
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"style" {
+                            current_border.bottom.style =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                b"cellXfs" => in_cell_xfs = true,
+                b"xf" if in_cell_xfs => {
+                    in_xf = true;
+                    let mut num_fmt_id: u32 = 0;
+                    let mut font_id: usize = 0;
+                    let mut fill_id: usize = 0;
+                    let mut border_id: usize = 0;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"numFmtId" => {
+                                num_fmt_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                            b"fontId" => {
+                                font_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                            b"fillId" => {
+                                fill_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                            b"borderId" => {
+                                border_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                            _ => {}
+                        }
+                    }
+                    current_xf_data = Some(XfData {
+                        num_fmt_id,
+                        font_id,
+                        fill_id,
+                        border_id,
+                        alignment: None,
+                    });
                 }
                 _ => {}
             },
@@ -296,20 +461,197 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
                         custom_formats.insert(id, code);
                     }
                 }
-                b"xf" if in_cell_xfs => {
-                    let mut num_fmt_id: u32 = 0;
+                // Font child elements (empty tags)
+                b"b" if in_font => current_font.bold = true,
+                b"i" if in_font => current_font.italic = true,
+                b"u" if in_font => current_font.underline = true,
+                b"sz" if in_font => {
                     for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"numFmtId" {
-                            num_fmt_id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                        if attr.key.as_ref() == b"val" {
+                            current_font.size =
+                                String::from_utf8_lossy(&attr.value).parse().ok();
                         }
                     }
-                    xf_num_fmt_ids.push(num_fmt_id);
+                }
+                b"name" if in_font => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"val" {
+                            current_font.name =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                b"color" if in_font => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"rgb" {
+                            current_font.color =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                // Fill child: patternFill as empty element
+                b"patternFill" if in_fill => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"patternType" {
+                            current_fill.pattern_type =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                // fgColor inside patternFill
+                b"fgColor" if in_pattern_fill => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"rgb" {
+                            current_fill.fg_color =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                // Border sides as empty elements
+                b"left" if in_border => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"style" {
+                            current_border.left.style =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                b"right" if in_border => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"style" {
+                            current_border.right.style =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                b"top" if in_border => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"style" {
+                            current_border.top.style =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                b"bottom" if in_border => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"style" {
+                            current_border.bottom.style =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                }
+                // Color inside a border side
+                b"color" if current_border_side > 0 => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"rgb" {
+                            let color =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                            match current_border_side {
+                                1 => current_border.left.color = color,
+                                2 => current_border.right.color = color,
+                                3 => current_border.top.color = color,
+                                4 => current_border.bottom.color = color,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                // Alignment inside xf
+                b"alignment" if in_xf => {
+                    if let Some(ref mut xf) = current_xf_data {
+                        let mut align = ParsedAlignment::default();
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"horizontal" => {
+                                    align.horizontal =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                b"vertical" => {
+                                    align.vertical =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                b"wrapText" => {
+                                    align.wrap_text =
+                                        String::from_utf8_lossy(&attr.value) == "1";
+                                }
+                                b"textRotation" => {
+                                    align.text_rotation =
+                                        String::from_utf8_lossy(&attr.value).parse().ok();
+                                }
+                                _ => {}
+                            }
+                        }
+                        xf.alignment = Some(align);
+                    }
+                }
+                // xf as empty element in cellXfs
+                b"xf" if in_cell_xfs && !in_xf => {
+                    let mut num_fmt_id: u32 = 0;
+                    let mut font_id: usize = 0;
+                    let mut fill_id: usize = 0;
+                    let mut border_id: usize = 0;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"numFmtId" => {
+                                num_fmt_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                            b"fontId" => {
+                                font_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                            b"fillId" => {
+                                fill_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                            b"borderId" => {
+                                border_id =
+                                    String::from_utf8_lossy(&attr.value).parse().unwrap_or(0);
+                            }
+                            _ => {}
+                        }
+                    }
+                    xf_entries.push(XfData {
+                        num_fmt_id,
+                        font_id,
+                        fill_id,
+                        border_id,
+                        alignment: None,
+                    });
                 }
                 _ => {}
             },
             Ok(Event::End(ref e)) => match e.name().as_ref() {
                 b"numFmts" => in_num_fmts = false,
+                b"fonts" => in_fonts = false,
+                b"font" if in_font => {
+                    in_font = false;
+                    parsed_fonts.push(std::mem::take(&mut current_font));
+                }
+                b"fills" => in_fills = false,
+                b"fill" if in_fill => {
+                    in_fill = false;
+                    in_pattern_fill = false;
+                    parsed_fills.push(std::mem::take(&mut current_fill));
+                }
+                b"patternFill" => in_pattern_fill = false,
+                b"borders" => in_borders = false,
+                b"border" if in_border => {
+                    in_border = false;
+                    current_border_side = 0;
+                    parsed_borders.push(std::mem::take(&mut current_border));
+                }
+                b"left" if in_border => current_border_side = 0,
+                b"right" if in_border => current_border_side = 0,
+                b"top" if in_border => current_border_side = 0,
+                b"bottom" if in_border => current_border_side = 0,
                 b"cellXfs" => in_cell_xfs = false,
+                b"xf" if in_xf => {
+                    in_xf = false;
+                    if let Some(xf) = current_xf_data.take() {
+                        xf_entries.push(xf);
+                    }
+                }
                 _ => {}
             },
             Ok(Event::Eof) => break,
@@ -320,19 +662,122 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
     }
 
     // Build style info per xf index
-    let styles: Vec<StyleInfo> = xf_num_fmt_ids
+    let default_font = ParsedFont {
+        bold: false,
+        italic: false,
+        underline: false,
+        name: Some("Calibri".to_string()),
+        size: Some(11.0),
+        color: None,
+    };
+
+    let styles: Vec<StyleInfo> = xf_entries
         .iter()
-        .map(|&fmt_id| {
-            let is_date = is_date_format(fmt_id, &custom_formats);
-            let format_code = if is_date || fmt_id == 0 {
+        .map(|xf| {
+            let is_date = is_date_format(xf.num_fmt_id, &custom_formats);
+            let format_code = if is_date || xf.num_fmt_id == 0 {
                 None
             } else {
-                // Return the format code for non-date, non-general formats
-                get_format_code(fmt_id, &custom_formats)
+                get_format_code(xf.num_fmt_id, &custom_formats)
             };
+
+            // Build CellStyle if there's non-default styling
+            let font = parsed_fonts.get(xf.font_id);
+            let fill = parsed_fills.get(xf.fill_id);
+            let border = parsed_borders.get(xf.border_id);
+
+            let has_font_styling = font.map_or(false, |f| {
+                f.bold
+                    || f.italic
+                    || f.underline
+                    || (f.name.is_some() && f.name.as_deref() != Some("Calibri"))
+                    || (f.size.is_some() && f.size != Some(11.0))
+                    || f.color.is_some()
+            });
+
+            let has_fill_styling = fill.map_or(false, |f| {
+                f.pattern_type.as_deref() == Some("solid") && f.fg_color.is_some()
+            });
+
+            let has_border_styling = border.map_or(false, |b| {
+                b.left.style.is_some()
+                    || b.right.style.is_some()
+                    || b.top.style.is_some()
+                    || b.bottom.style.is_some()
+            });
+
+            let has_alignment = xf.alignment.is_some();
+
+            let cell_style = if has_font_styling
+                || has_fill_styling
+                || has_border_styling
+                || has_alignment
+            {
+                let f = font.unwrap_or(&default_font);
+                let mut style = CellStyle::default();
+
+                // Font
+                if has_font_styling {
+                    style.bold = f.bold;
+                    style.italic = f.italic;
+                    style.underline = f.underline;
+                    if f.name.as_deref() != Some("Calibri") {
+                        style.font_name = f.name.clone();
+                    }
+                    if f.size != Some(11.0) {
+                        style.font_size = f.size;
+                    }
+                    style.font_color = f.color.clone();
+                }
+
+                // Fill
+                if has_fill_styling {
+                    if let Some(fl) = fill {
+                        style.fill_color = fl.fg_color.clone();
+                    }
+                }
+
+                // Border
+                if has_border_styling {
+                    if let Some(b) = border {
+                        style.border_left = b.left.style.clone();
+                        style.border_right = b.right.style.clone();
+                        style.border_top = b.top.style.clone();
+                        style.border_bottom = b.bottom.style.clone();
+                        // Use the first non-None border color as the shared color
+                        let first_color = b
+                            .left
+                            .color
+                            .as_ref()
+                            .or(b.right.color.as_ref())
+                            .or(b.top.color.as_ref())
+                            .or(b.bottom.color.as_ref());
+                        style.border_color = first_color.cloned();
+                    }
+                }
+
+                // Alignment
+                if let Some(ref align) = xf.alignment {
+                    style.horizontal_alignment = align.horizontal.clone();
+                    style.vertical_alignment = align.vertical.clone();
+                    style.wrap_text = align.wrap_text;
+                    style.text_rotation = align.text_rotation;
+                }
+
+                // Number format (include in style if there's also visual styling)
+                if format_code.is_some() {
+                    style.number_format = format_code.clone();
+                }
+
+                Some(style)
+            } else {
+                None
+            };
+
             StyleInfo {
                 is_date,
                 format_code,
+                cell_style,
             }
         })
         .collect();
@@ -643,6 +1088,17 @@ fn parse_worksheet<R: Read + Seek>(
                             let style_info = styles.get(cell_style);
                             let is_date = style_info.map(|s| s.is_date).unwrap_or(false);
                             let format_code = style_info.and_then(|s| s.format_code.clone());
+                            let cell_style_data =
+                                style_info.and_then(|s| s.cell_style.clone());
+
+                            // If style has visual styling, don't pass format_code
+                            // to resolve — it's captured in the CellStyle instead
+                            let resolve_fmt = if cell_style_data.is_some() {
+                                &None
+                            } else {
+                                &format_code
+                            };
+
                             let value = if !cell_formula_text.is_empty() {
                                 // Cell has a formula
                                 let cached = resolve_cell_value(
@@ -666,8 +1122,18 @@ fn parse_worksheet<R: Read + Seek>(
                                     &cell_value_text,
                                     shared_strings,
                                     is_date,
-                                    &format_code,
+                                    resolve_fmt,
                                 )
+                            };
+
+                            // Wrap in StyledCell if there's non-default styling
+                            let final_value = if let Some(style) = cell_style_data {
+                                CellValue::StyledCell {
+                                    value: Box::new(value),
+                                    style,
+                                }
+                            } else {
+                                value
                             };
 
                             // Ensure the row has enough columns
@@ -675,7 +1141,7 @@ fn parse_worksheet<R: Read + Seek>(
                                 while row.len() <= current_col {
                                     row.push(CellValue::Empty);
                                 }
-                                row[current_col] = value;
+                                row[current_col] = final_value;
                             }
 
                             in_cell = false;
