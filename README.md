@@ -36,6 +36,7 @@ Existing Python spreadsheet libraries force you to choose between performance, m
 - **Column widths & row heights** — set and read custom column widths and row heights
 - **Freeze panes** — freeze rows and/or columns so they stay visible when scrolling
 - **Auto-filter** — add drop-down filter controls to column headers
+- **Named ranges / defined names** — define workbook-scoped or sheet-scoped names; read them back from existing files
 - **Sheet visibility states** — mark sheets as visible, hidden, or veryHidden; read back state from existing files
 - **Number formats** — write and read cells with custom number formats (currency, percentage, custom format strings)
 - **Cell styling** — fonts (bold, italic, underline, name, size, color), fills, borders (thin, medium, thick, dashed, dotted, double), alignment (horizontal, vertical, wrap text, rotation), and number formats on styled cells
@@ -206,6 +207,25 @@ with XlsxWriter("output.xlsx") as writer:
     ])
 ```
 
+### Named ranges / defined names
+
+```python
+from opensheet_core import XlsxWriter, defined_names
+
+# Write named ranges
+with XlsxWriter("output.xlsx") as writer:
+    writer.add_sheet("Config")
+    writer.write_row(["Rate"])
+    writer.write_row([0.08])
+    writer.define_name("TaxRate", "Config!$A$2")                    # Workbook-scoped
+    writer.define_name("LocalRate", "Config!$A$2", sheet_index=0)   # Sheet-scoped
+
+# Read named ranges
+names = defined_names("output.xlsx")
+for n in names:
+    print(f"{n['name']} → {n['value']} (sheet_index={n['sheet_index']})")
+```
+
 ### Writing formulas
 
 ```python
@@ -292,6 +312,10 @@ Reads a single sheet by name or index. Returns the first sheet by default.
 
 Returns the list of sheet names in a workbook.
 
+### `defined_names(path: str) -> list[dict]`
+
+Returns the defined names (named ranges) in a workbook. Each dict has `"name"` (str), `"value"` (str, the cell reference or formula), and `"sheet_index"` (int if sheet-scoped, `None` if workbook-scoped).
+
 ### `XlsxWriter(path: str)`
 
 Streaming XLSX writer. Use as a context manager.
@@ -306,6 +330,7 @@ Streaming XLSX writer. Use as a context manager.
 | `freeze_panes(row=0, col=0)` | Freeze top `row` rows and left `col` columns |
 | `auto_filter(range)` | Set auto-filter on a range (e.g. `"A1:C1"`) |
 | `set_sheet_state(state)` | Set sheet visibility: `"visible"`, `"hidden"`, or `"veryHidden"` |
+| `define_name(name, value, sheet_index=None)` | Define a named range (workbook-scoped by default, or sheet-scoped) |
 | `close()` | Finalize and close the file |
 
 ### `read_xlsx_df(path, sheet_name=None, sheet_index=None, header=True)`
@@ -413,7 +438,7 @@ OpenSheet Core is designed to be a faster, memory-efficient alternative to openp
 | | Row/column insert/delete | Yes | — |
 | | Print settings | Yes | Planned |
 | | Row/column grouping | Yes | — |
-| **Workbook** | Named ranges / defined names | Yes | Planned |
+| **Workbook** | Named ranges / defined names | Yes | Yes |
 | | Document properties | Yes | Planned |
 | | Workbook protection | Yes | — |
 | | Multiple sheet states (hidden, veryHidden) | Yes | Yes |
@@ -460,6 +485,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 - [x] Pandas DataFrame integration (`read_xlsx_df` / `to_xlsx`)
 - [x] Basic cell styling (fonts, fills, borders, alignment)
 - [x] Sheet visibility states (visible, hidden, veryHidden)
+- [x] Named ranges / defined names (workbook-scoped and sheet-scoped)
 - [x] `xlsx_to_markdown()` — structured markdown tables for LLM consumption
 - [x] `xlsx_to_text()` — plain text extraction for search indexes
 - [x] `xlsx_to_chunks()` — embedding-sized chunks with header attachment
@@ -468,7 +494,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 
 ### Phase 2 — Broader compatibility
 
-- [ ] Named ranges / defined names
+- [x] Named ranges / defined names
 - [ ] Data validation
 - [ ] Comments and hyperlinks
 - [ ] .xlsm read support (preserve macros)
