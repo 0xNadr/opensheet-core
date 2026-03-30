@@ -84,6 +84,7 @@ pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<Vec<Sheet>, XlsxError> {
             column_widths: data.column_widths,
             row_heights: data.row_heights,
             freeze_pane: data.freeze_pane,
+            auto_filter: data.auto_filter,
         });
     }
 
@@ -393,13 +394,14 @@ fn parse_cell_ref(cell_ref: &str) -> (usize, usize) {
     (row.saturating_sub(1), col)
 }
 
-/// Parsed worksheet data: rows, merge ranges, column widths, row heights, and freeze pane.
+/// Parsed worksheet data: rows, merge ranges, column widths, row heights, freeze pane, and auto-filter.
 struct WorksheetData {
     rows: Vec<Vec<CellValue>>,
     merges: Vec<String>,
     column_widths: HashMap<u32, f64>,
     row_heights: HashMap<u32, f64>,
     freeze_pane: Option<(u32, u32)>,
+    auto_filter: Option<String>,
 }
 
 /// Parse a single worksheet XML file and return rows of cell values and merge ranges.
@@ -430,6 +432,7 @@ fn parse_worksheet<R: Read + Seek>(
     let mut row_heights: HashMap<u32, f64> = HashMap::new();
     let mut in_cols = false;
     let mut freeze_pane: Option<(u32, u32)> = None;
+    let mut auto_filter: Option<String> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -488,6 +491,14 @@ fn parse_worksheet<R: Read + Seek>(
                         if custom_width && min > 0 && max >= min {
                             for col in min..=max {
                                 column_widths.insert(col - 1, width); // 0-based
+                            }
+                        }
+                    }
+                    b"autoFilter" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"ref" {
+                                auto_filter =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
                             }
                         }
                     }
@@ -630,6 +641,13 @@ fn parse_worksheet<R: Read + Seek>(
                     _ => {}
                 }
             }
+            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"autoFilter" => {
+                for attr in e.attributes().flatten() {
+                    if attr.key.as_ref() == b"ref" {
+                        auto_filter = Some(String::from_utf8_lossy(&attr.value).to_string());
+                    }
+                }
+            }
             Ok(Event::Empty(ref e)) if e.name().as_ref() == b"pane" => {
                 let mut y_split: u32 = 0;
                 let mut x_split: u32 = 0;
@@ -708,6 +726,7 @@ fn parse_worksheet<R: Read + Seek>(
         column_widths,
         row_heights,
         freeze_pane,
+        auto_filter,
     })
 }
 

@@ -203,6 +203,12 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
             }
         }
 
+        // Auto-filter range or None
+        match &sheet.auto_filter {
+            Some(range) => dict.set_item("auto_filter", range)?,
+            None => dict.set_item("auto_filter", py.None())?,
+        }
+
         result.append(dict)?;
     }
 
@@ -343,6 +349,16 @@ impl XlsxWriter {
             .as_mut()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
         w.merge_cells(range)?;
+        Ok(())
+    }
+
+    /// Set an auto-filter on a range (e.g. "A1:C1").
+    fn auto_filter(&mut self, range: &str) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.auto_filter(range)?;
         Ok(())
     }
 

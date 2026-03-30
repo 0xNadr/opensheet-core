@@ -17,6 +17,7 @@ def read_xlsx(path: str) -> list[dict[str, Any]]:
       - ``"column_widths"``: dict mapping 0-based column index to width in character units
       - ``"row_heights"``: dict mapping 0-based row index to height in points
       - ``"freeze_pane"``: tuple of (rows_frozen, cols_frozen) or None
+      - ``"auto_filter"``: auto-filter range string (e.g. ``"A1:C1"``) or None
     """
     ...
 
@@ -57,6 +58,9 @@ class XlsxWriter:
         ...
     def merge_cells(self, range: str) -> None:
         """Merge a range of cells (e.g. ``"A1:C1"``)."""
+        ...
+    def auto_filter(self, range: str) -> None:
+        """Set an auto-filter on a range (e.g. ``"A1:C1"``)."""
         ...
     def freeze_panes(self, row: int = 0, col: int = 0) -> None:
         """Freeze the top ``row`` rows and left ``col`` columns.

@@ -42,6 +42,8 @@ pub struct Sheet {
     /// Freeze pane split point: (rows_frozen, cols_frozen).
     /// None if no freeze panes are set.
     pub freeze_pane: Option<(u32, u32)>,
+    /// Auto-filter range (e.g. "A1:C1"), or None if not set.
+    pub auto_filter: Option<std::string::String>,
 }
 
 /// Convert an Excel serial number to (year, month, day, hour, minute, second, microsecond).

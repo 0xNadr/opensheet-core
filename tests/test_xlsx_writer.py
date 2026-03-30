@@ -586,3 +586,75 @@ def test_freeze_pane_openpyxl_both(tmp_xlsx):
 
     sheets = opensheet_core.read_xlsx(tmp_xlsx)
     assert sheets[0]["freeze_pane"] == (2, 1)
+
+
+# --- Auto-filter ---
+
+
+def test_auto_filter_write_and_read(tmp_xlsx):
+    """Write auto-filter and verify roundtrip."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Filtered")
+        w.write_row(["Name", "Age", "City"])
+        w.write_row(["Alice", 30, "NYC"])
+        w.write_row(["Bob", 25, "LA"])
+        w.auto_filter("A1:C1")
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["auto_filter"] == "A1:C1"
+    assert sheets[0]["rows"][0] == ["Name", "Age", "City"]
+
+
+def test_no_auto_filter(tmp_xlsx):
+    """Sheets without auto-filter return None."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Plain")
+        w.write_row(["no", "filter"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["auto_filter"] is None
+
+
+def test_auto_filter_multi_sheet(tmp_xlsx):
+    """Auto-filter is per-sheet."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Sheet1")
+        w.write_row(["A", "B"])
+        w.auto_filter("A1:B1")
+        w.add_sheet("Sheet2")
+        w.write_row(["C", "D"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["auto_filter"] == "A1:B1"
+    assert sheets[1]["auto_filter"] is None
+
+
+def test_auto_filter_with_merge_and_freeze(tmp_xlsx):
+    """Auto-filter combined with merge cells and freeze panes."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Combined")
+        w.freeze_panes(row=1, col=0)
+        w.write_row(["Name", "Age"])
+        w.write_row(["Alice", 30])
+        w.auto_filter("A1:B1")
+        w.merge_cells("A3:B3")
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["auto_filter"] == "A1:B1"
+    assert sheets[0]["freeze_pane"] == (1, 0)
+    assert "A3:B3" in sheets[0]["merges"]
+
+
+def test_auto_filter_openpyxl_interop(tmp_xlsx):
+    """Write auto-filter with openpyxl, read with opensheet_core."""
+    openpyxl = pytest.importorskip("openpyxl")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Name", "Age", "Score"])
+    ws.append(["Alice", 30, 95])
+    ws.auto_filter.ref = "A1:C1"
+    wb.save(tmp_xlsx)
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["auto_filter"] == "A1:C1"

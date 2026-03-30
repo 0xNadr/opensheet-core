@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2025-06-01
+### Added
+- Column width support: `set_column_width()` on writer, `"column_widths"` in reader output
+- Row height support: `set_row_height()` on writer, `"row_heights"` in reader output
+- Freeze panes support: `freeze_panes()` on writer, `"freeze_pane"` in reader output
+- Auto-filter support: `auto_filter()` on writer, `"auto_filter"` in reader output
+
+## [0.1.1] - 2026-03-30
+
+### Changed
+- Limit Dependabot Cargo updates to patch-only, monthly
+- Add Codecov test results reporting to CI
+- Add project infrastructure (CONTRIBUTING.md, CHANGELOG.md, issue templates)
+
+## [0.1.0] - 2026-03-29
 
 ### Added
 - Streaming XLSX reader with typed cell extraction (strings, numbers, booleans, dates, datetimes, formulas, empty cells)
@@ -26,5 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Benchmarks vs openpyxl with runnable benchmark script
 - Zero Python dependencies
 
-[Unreleased]: https://github.com/0xNadr/opensheet-core/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/0xNadr/opensheet-core/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/0xNadr/opensheet-core/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/0xNadr/opensheet-core/releases/tag/v0.1.0

@@ -70,6 +70,7 @@ pub struct StreamingXlsxWriter<W: Write + Seek> {
     pending_columns: HashMap<u32, f64>,
     pending_row_heights: HashMap<u32, f64>,
     pending_freeze_pane: Option<(u32, u32)>,
+    pending_auto_filter: Option<String>,
 }
 
 impl<W: Write + Seek> StreamingXlsxWriter<W> {
@@ -87,6 +88,7 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             pending_columns: HashMap::new(),
             pending_row_heights: HashMap::new(),
             pending_freeze_pane: None,
+            pending_auto_filter: None,
         }
     }
 
@@ -354,6 +356,17 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         Ok(())
     }
 
+    /// Set an auto-filter on a range (e.g. "A1:C1").
+    pub fn auto_filter(&mut self, range: &str) -> Result<(), XlsxWriteError> {
+        if !self.sheet_open {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        self.pending_auto_filter = Some(range.to_string());
+        Ok(())
+    }
+
     /// Set the height of a row (0-based index) in points.
     pub fn set_row_height(&mut self, row_index: u32, height: f64) -> Result<(), XlsxWriteError> {
         if !self.sheet_open {
@@ -374,6 +387,12 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
 
             // Clear per-sheet state
             self.pending_row_heights.clear();
+
+            // Write autoFilter if set
+            if let Some(ref range) = self.pending_auto_filter.take() {
+                let escaped = xml_escape(range);
+                write!(self.zip()?, "<autoFilter ref=\"{escaped}\"/>")?;
+            }
 
             // Write mergeCells if any
             let merges = std::mem::take(&mut self.pending_merges.ranges);
@@ -714,5 +733,55 @@ mod tests {
         buf.set_position(0);
         let sheets = read_xlsx(buf).unwrap();
         assert_eq!(sheets[0].freeze_pane, None);
+    }
+
+    #[test]
+    fn test_auto_filter_roundtrip() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Filtered").unwrap();
+            writer
+                .write_row(&[
+                    CellValue::String("Name".to_string()),
+                    CellValue::String("Age".to_string()),
+                ])
+                .unwrap();
+            writer
+                .write_row(&[
+                    CellValue::String("Alice".to_string()),
+                    CellValue::Number(30.0),
+                ])
+                .unwrap();
+            writer.auto_filter("A1:B1").unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        assert_eq!(sheets[0].auto_filter, Some("A1:B1".to_string()));
+    }
+
+    #[test]
+    fn test_no_auto_filter() {
+        use crate::reader::xlsx::read_xlsx;
+        use std::io::Cursor;
+
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = StreamingXlsxWriter::new(&mut buf);
+            writer.add_sheet("Plain").unwrap();
+            writer
+                .write_row(&[CellValue::String("Data".to_string())])
+                .unwrap();
+            writer.close().unwrap();
+        }
+
+        buf.set_position(0);
+        let sheets = read_xlsx(buf).unwrap();
+        assert_eq!(sheets[0].auto_filter, None);
     }
 }
