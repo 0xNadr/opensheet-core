@@ -55,6 +55,9 @@ impl CellStyle {
 #[derive(Debug, Clone)]
 pub enum CellValue {
     String(std::string::String),
+    /// A reference to the shared string table by index.
+    /// Avoids cloning the string during parsing; resolved to a Python str at conversion time.
+    SharedString(usize),
     Number(f64),
     Bool(bool),
     /// A formula with its text and optional cached value.

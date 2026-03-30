@@ -58,8 +58,9 @@ def read_opensheet(path):
 def read_openpyxl(path):
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
-    for row in ws.iter_rows(values_only=True):
-        _ = list(row)
+    # Materialize all rows to match opensheet's read_sheet() behavior (fair memory comparison)
+    all_rows = [list(row) for row in ws.iter_rows(values_only=True)]
+    _ = len(all_rows)
     wb.close()
 
 

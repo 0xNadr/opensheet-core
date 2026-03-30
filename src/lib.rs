@@ -14,12 +14,27 @@ use types::CellValue;
 use writer::xlsx::StreamingXlsxWriter;
 
 /// Convert a CellValue to a Python object.
-fn cell_to_py(py: Python<'_>, cell: &CellValue) -> PyResult<Py<PyAny>> {
+///
+/// `py_shared_strings` contains pre-converted Python str objects for the shared string table.
+/// SharedString(idx) cells look up into this table instead of creating new Python strings.
+fn cell_to_py(
+    py: Python<'_>,
+    cell: CellValue,
+    py_shared_strings: &[Py<PyAny>],
+) -> PyResult<Py<PyAny>> {
     match cell {
         CellValue::String(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
+        CellValue::SharedString(idx) => {
+            // Reuse pre-converted Python string — just increment refcount
+            if let Some(py_str) = py_shared_strings.get(idx) {
+                Ok(py_str.clone_ref(py))
+            } else {
+                Ok(PyNone::get(py).to_owned().into_any().unbind())
+            }
+        }
         CellValue::Number(n) => {
             if n.fract() == 0.0 && n.abs() < i64::MAX as f64 {
-                Ok((*n as i64).into_pyobject(py)?.into_any().unbind())
+                Ok((n as i64).into_pyobject(py)?.into_any().unbind())
             } else {
                 Ok(n.into_pyobject(py)?.into_any().unbind())
             }
@@ -30,17 +45,17 @@ fn cell_to_py(py: Python<'_>, cell: &CellValue) -> PyResult<Py<PyAny>> {
             cached_value,
         } => {
             let cached_py = match cached_value {
-                Some(v) => Some(cell_to_py(py, v)?),
+                Some(v) => Some(cell_to_py(py, *v, py_shared_strings)?),
                 None => None,
             };
             let f = Formula {
-                formula: formula.clone(),
+                formula,
                 cached_value: cached_py,
             };
             Ok(f.into_pyobject(py)?.into_any().unbind())
         }
         CellValue::Date { year, month, day } => {
-            let date = PyDate::new(py, *year, *month as u8, *day as u8)?;
+            let date = PyDate::new(py, year, month as u8, day as u8)?;
             Ok(date.into_any().unbind())
         }
         CellValue::DateTime {
@@ -53,33 +68,26 @@ fn cell_to_py(py: Python<'_>, cell: &CellValue) -> PyResult<Py<PyAny>> {
             microsecond,
         } => {
             let dt = PyDateTime::new(
-                py,
-                *year,
-                *month as u8,
-                *day as u8,
-                *hour as u8,
-                *minute as u8,
-                *second as u8,
-                *microsecond,
-                None,
+                py, year, month as u8, day as u8, hour as u8, minute as u8, second as u8,
+                microsecond, None,
             )?;
             Ok(dt.into_any().unbind())
         }
         CellValue::FormattedNumber { value, format_code } => {
             let py_value: Py<PyAny> = if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
-                (*value as i64).into_pyobject(py)?.into_any().unbind()
+                (value as i64).into_pyobject(py)?.into_any().unbind()
             } else {
                 value.into_pyobject(py)?.into_any().unbind()
             };
             let fc = FormattedCell {
                 value: py_value,
-                number_format: format_code.clone(),
+                number_format: format_code,
             };
             Ok(fc.into_pyobject(py)?.into_any().unbind())
         }
         CellValue::StyledCell { value, style } => {
-            let inner_py = cell_to_py(py, value)?;
-            let py_style = cell_style_to_py(py, style)?;
+            let inner_py = cell_to_py(py, *value, py_shared_strings)?;
+            let py_style = cell_style_to_py(py, &style)?;
             let sc = StyledCell {
                 value: inner_py,
                 style: Py::new(py, py_style)?,
@@ -113,14 +121,36 @@ fn cell_style_to_py(_py: Python<'_>, style: &types::CellStyle) -> PyResult<CellS
     })
 }
 
-/// Convert rows to a Python list of lists.
-/// Pre-allocates inner lists with known capacity to avoid repeated reallocation.
-fn rows_to_py(py: Python<'_>, rows: &[Vec<CellValue>]) -> PyResult<Py<PyAny>> {
+/// Pre-convert shared strings to Python str objects for reuse.
+///
+/// Each SharedString(idx) cell can then cheaply clone_ref the Python object
+/// instead of creating a new Python string from scratch.
+fn intern_shared_strings(py: Python<'_>, shared_strings: &[String]) -> Vec<Py<PyAny>> {
+    shared_strings
+        .iter()
+        .map(|s| {
+            s.into_pyobject(py)
+                .expect("string conversion should not fail")
+                .into_any()
+                .unbind()
+        })
+        .collect()
+}
+
+/// Convert rows to a Python list of lists, consuming the Rust data.
+///
+/// Takes ownership of rows so each Rust row is freed after conversion,
+/// reducing peak memory (Rust + Python data don't fully overlap).
+fn rows_to_py(
+    py: Python<'_>,
+    rows: Vec<Vec<CellValue>>,
+    py_shared_strings: &[Py<PyAny>],
+) -> PyResult<Py<PyAny>> {
     let mut outer: Vec<Py<PyAny>> = Vec::with_capacity(rows.len());
     for row in rows {
         let mut py_cells: Vec<Py<PyAny>> = Vec::with_capacity(row.len());
         for cell in row {
-            py_cells.push(cell_to_py(py, cell)?);
+            py_cells.push(cell_to_py(py, cell, py_shared_strings)?);
         }
         let py_row = PyList::new(py, &py_cells)?;
         outer.push(py_row.into_any().unbind());
@@ -276,13 +306,18 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     let file = File::open(path)
         .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("{path}: {e}")))?;
     let reader = BufReader::new(file);
-    let sheets = reader::xlsx::read_xlsx(reader)?;
+    let (sheets, shared_strings) = reader::xlsx::read_xlsx(reader)?;
+
+    // Pre-convert shared strings to Python objects for reuse
+    let py_shared = intern_shared_strings(py, &shared_strings);
+    // Drop the Rust shared strings — they've been converted to Python
+    drop(shared_strings);
 
     let result = PyList::empty(py);
     for sheet in sheets {
         let dict = PyDict::new(py);
         dict.set_item("name", &sheet.name)?;
-        dict.set_item("rows", rows_to_py(py, &sheet.rows)?)?;
+        dict.set_item("rows", rows_to_py(py, sheet.rows, &py_shared)?)?;
         let merges_list = PyList::new(py, &sheet.merges)?;
         dict.set_item("merges", merges_list)?;
 
@@ -326,6 +361,7 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
 /// Read a specific sheet by name or index from an XLSX file.
 ///
 /// Returns a list of rows (list of lists of cell values).
+/// Only parses the requested sheet, skipping others for efficiency.
 #[pyfunction]
 #[pyo3(signature = (path, sheet_name=None, sheet_index=None))]
 fn read_sheet(
@@ -337,26 +373,13 @@ fn read_sheet(
     let file = File::open(path)
         .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("{path}: {e}")))?;
     let reader = BufReader::new(file);
-    let sheets = reader::xlsx::read_xlsx(reader)?;
+    let (sheet, shared_strings) =
+        reader::xlsx::read_single_sheet(reader, sheet_name, sheet_index)?;
 
-    let sheet = if let Some(name) = sheet_name {
-        sheets.iter().find(|s| s.name == name).ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!("Sheet '{name}' not found"))
-        })?
-    } else if let Some(idx) = sheet_index {
-        sheets.get(idx).ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "Sheet index {idx} out of range (file has {} sheets)",
-                sheets.len()
-            ))
-        })?
-    } else {
-        sheets
-            .first()
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("No sheets found in file"))?
-    };
+    let py_shared = intern_shared_strings(py, &shared_strings);
+    drop(shared_strings);
 
-    rows_to_py(py, &sheet.rows)
+    rows_to_py(py, sheet.rows, &py_shared)
 }
 
 /// List sheet names in an XLSX file.
@@ -365,8 +388,8 @@ fn sheet_names(path: &str) -> PyResult<Vec<String>> {
     let file = File::open(path)
         .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("{path}: {e}")))?;
     let reader = BufReader::new(file);
-    let sheets = reader::xlsx::read_xlsx(reader)?;
-    Ok(sheets.iter().map(|s| s.name.clone()).collect())
+    let names = reader::xlsx::read_sheet_names(reader)?;
+    Ok(names)
 }
 
 /// A spreadsheet formula with optional cached value.

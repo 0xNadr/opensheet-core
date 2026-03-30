@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update README benchmark numbers to reflect accurate, unbiased measurements
 - Add benchmarking methodology documentation (`docs/benchmarking.md`)
 
+### Optimized
+- Reduce read memory usage by ~25% via deferred shared-string resolution: store string indices during parsing, resolve to Python objects at the boundary
+- Pre-intern shared strings as Python objects; repeated strings reuse the same object via `clone_ref()` instead of allocating new copies
+- Convert-and-drop pattern: Rust row data is freed as Python objects are created, avoiding holding both representations simultaneously
+- `read_sheet()` now only parses the requested worksheet instead of all sheets in the workbook
+- `sheet_names()` now only parses `workbook.xml` instead of loading shared strings, styles, and worksheets
+- Read memory improved from 18 MB to 13.5 MB (2.5x less than openpyxl, previously 2.6x more)
+
 ## [0.2.0] - 2026-03-30
 
 ### Added

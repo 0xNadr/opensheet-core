@@ -132,9 +132,18 @@ Core measurement functions used by all benchmark scripts:
 
 ### Known tradeoffs
 
-- **Read memory**: OpenSheet Core currently materializes all rows into Python lists via `read_sheet()`, using more memory than openpyxl's `read_only` iterator mode. A streaming iterator API is planned.
+- **Read memory**: OpenSheet Core materializes all rows into Python lists via `read_sheet()`. Despite this, it uses ~2.5x less memory than openpyxl thanks to deferred shared-string resolution (strings are stored as indices during Rust parsing and only converted to Python objects at the boundary via pre-interned lookup, avoiding duplicate allocations). A streaming iterator API is planned to bring constant-memory reads.
 - **Write speed**: The speedup is more modest for writes because both libraries stream data — the bottleneck shifts toward Python-side row generation and data serialization.
 - **File size**: OpenSheet Core files may be larger due to different XML formatting and compression settings. File content is equivalent.
+
+### Memory optimization details
+
+OpenSheet Core's read path uses several techniques to minimize memory:
+
+1. **Deferred shared-string resolution**: During XML parsing, shared strings are stored as integer indices (`SharedString(idx)`) rather than cloned `String` values. This avoids O(N) string allocations during parsing.
+2. **Pre-interned Python strings**: The shared string table is converted to Python objects once. When cells reference the same string, they reuse the existing Python object via `clone_ref()` instead of creating a new one.
+3. **Convert-and-drop**: The Rust row data is consumed (taken by value) during Python conversion. As each row is converted, the Rust memory is freed immediately rather than holding both representations simultaneously.
+4. **Single-sheet parsing**: `read_sheet()` only parses the requested worksheet, skipping all other sheets in the workbook.
 
 ### What could affect your results
 

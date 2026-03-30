@@ -26,13 +26,11 @@ def generate_test_file(path, rows, cols):
 
 
 def do_openpyxl_read(path):
-    """Read all cells with openpyxl."""
+    """Read all cells with openpyxl (materialize for fair memory comparison)."""
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
-    row_count = 0
-    for row in ws.iter_rows(values_only=True):
-        row_count += 1
-        _ = list(row)
+    all_rows = [list(row) for row in ws.iter_rows(values_only=True)]
+    _ = len(all_rows)
     wb.close()
 
 

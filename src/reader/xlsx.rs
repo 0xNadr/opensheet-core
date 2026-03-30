@@ -57,8 +57,11 @@ struct SheetInfo {
     path: String,
 }
 
-/// Read an XLSX file and return all sheets.
-pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<Vec<Sheet>, XlsxError> {
+/// Read an XLSX file and return all sheets plus the shared string table.
+///
+/// Cells referencing shared strings are stored as `CellValue::SharedString(index)`
+/// to avoid cloning. The caller must resolve them using the returned shared strings.
+pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<(Vec<Sheet>, Vec<String>), XlsxError> {
     let mut archive = ZipArchive::new(reader)?;
 
     // 1. Parse relationships to map rId -> file path
@@ -88,7 +91,64 @@ pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<Vec<Sheet>, XlsxError> {
         });
     }
 
-    Ok(sheets)
+    Ok((sheets, shared_strings))
+}
+
+/// Read a single sheet by name or index, without parsing other worksheets.
+///
+/// Returns the sheet and the shared string table for resolving SharedString cells.
+pub fn read_single_sheet<R: Read + Seek>(
+    reader: R,
+    sheet_name: Option<&str>,
+    sheet_index: Option<usize>,
+) -> Result<(Sheet, Vec<String>), XlsxError> {
+    let mut archive = ZipArchive::new(reader)?;
+
+    let rels = parse_workbook_rels(&mut archive)?;
+    let sheet_infos = parse_workbook(&mut archive, &rels)?;
+    let shared_strings = parse_shared_strings(&mut archive)?;
+    let styles = parse_styles(&mut archive)?;
+
+    let info = if let Some(name) = sheet_name {
+        sheet_infos
+            .iter()
+            .find(|s| s.name == name)
+            .ok_or_else(|| {
+                XlsxError::InvalidStructure(format!("Sheet '{name}' not found"))
+            })?
+    } else if let Some(idx) = sheet_index {
+        sheet_infos.get(idx).ok_or_else(|| {
+            XlsxError::InvalidStructure(format!(
+                "Sheet index {idx} out of range (file has {} sheets)",
+                sheet_infos.len()
+            ))
+        })?
+    } else {
+        sheet_infos.first().ok_or_else(|| {
+            XlsxError::InvalidStructure("No sheets found in file".to_string())
+        })?
+    };
+
+    let data = parse_worksheet(&mut archive, &info.path, &shared_strings, &styles)?;
+    let sheet = Sheet {
+        name: info.name.clone(),
+        rows: data.rows,
+        merges: data.merges,
+        column_widths: data.column_widths,
+        row_heights: data.row_heights,
+        freeze_pane: data.freeze_pane,
+        auto_filter: data.auto_filter,
+    };
+
+    Ok((sheet, shared_strings))
+}
+
+/// List sheet names without parsing worksheet data.
+pub fn read_sheet_names<R: Read + Seek>(reader: R) -> Result<Vec<String>, XlsxError> {
+    let mut archive = ZipArchive::new(reader)?;
+    let rels = parse_workbook_rels(&mut archive)?;
+    let sheet_infos = parse_workbook(&mut archive, &rels)?;
+    Ok(sheet_infos.into_iter().map(|s| s.name).collect())
 }
 
 /// Parse xl/_rels/workbook.xml.rels to get rId -> target path mapping.
@@ -1316,13 +1376,14 @@ fn resolve_cell_value(
     }
 
     match cell_type {
-        // Shared string
+        // Shared string — store index to avoid cloning; resolved at Python conversion time
         "s" => {
             if let Ok(idx) = raw.parse::<usize>() {
-                shared_strings
-                    .get(idx)
-                    .map(|s| CellValue::String(s.clone()))
-                    .unwrap_or(CellValue::Empty)
+                if idx < shared_strings.len() {
+                    CellValue::SharedString(idx)
+                } else {
+                    CellValue::Empty
+                }
             } else {
                 CellValue::String(raw.to_string())
             }
@@ -1404,8 +1465,8 @@ mod tests {
         let none_fmt = None;
 
         match resolve_cell_value("s", "0", &shared, false, &none_fmt) {
-            CellValue::String(s) => assert_eq!(s, "hello"),
-            _ => panic!("expected string"),
+            CellValue::SharedString(idx) => assert_eq!(shared[idx], "hello"),
+            _ => panic!("expected SharedString"),
         }
 
         match resolve_cell_value("", "42.5", &shared, false, &none_fmt) {

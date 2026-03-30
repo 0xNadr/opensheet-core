@@ -51,10 +51,10 @@ Benchmarked against [openpyxl](https://openpyxl.readthedocs.io/) 3.1.5 on a 100,
 
 | Operation | OpenSheet Core | openpyxl | Speedup | Memory (RSS delta) |
 |-----------|---------------|----------|---------|---------------------|
-| **Write** | 2.4s | 3.7s | **1.5x faster** | **1.9x less** (1.1 MB vs 2.2 MB) |
-| **Read** | 251ms | 3.4s | **13x faster** | 2.6x more (18 MB vs 7 MB) |
+| **Write** | 2.3s | 3.7s | **1.6x faster** | **1.7x less** (1.2 MB vs 2.1 MB) |
+| **Read** | 253ms | 3.5s | **13.8x faster** | **2.5x less** (13.5 MB vs 33.3 MB) |
 
-OpenSheet Core's read speed advantage comes from its Rust streaming parser. The higher read memory reflects loading all rows into Python objects at once — a tradeoff for the simpler `read_sheet()` API. Write memory is lower because the Rust writer streams data directly to disk.
+OpenSheet Core is faster and uses less memory for both reads and writes. The speed advantage comes from a Rust streaming parser with deferred shared-string resolution — strings are stored as indices during parsing and only converted to Python objects at the boundary. Write memory is low because the Rust writer streams data directly to disk.
 
 > Run it yourself: `python benchmarks/benchmark.py`
 >
@@ -309,14 +309,14 @@ OpenSheet Core is designed to be a faster, memory-efficient alternative to openp
 
 | | OpenSheet Core | openpyxl |
 |---|---|---|
-| **Write 1M cells** | ~2.4s | ~3.7s |
-| **Read 1M cells** | ~0.25s | ~3.4s |
-| **Write memory** | 1.1 MB RSS delta | 2.2 MB RSS delta |
-| **Read memory** | 18 MB RSS delta | 7 MB RSS delta |
+| **Write 1M cells** | ~2.3s | ~3.7s |
+| **Read 1M cells** | ~0.25s | ~3.5s |
+| **Write memory** | 1.2 MB RSS delta | 2.1 MB RSS delta |
+| **Read memory** | 13.5 MB RSS delta | 33.3 MB RSS delta |
 | **Python dependencies** | Zero | Several |
 | **Architecture** | Rust streaming core | Pure Python DOM |
 
-> Note: Read memory is higher because `read_sheet()` materializes all rows into Python lists. A future streaming iterator API will bring constant-memory reads.
+> Memory optimization: shared strings are stored as indices during parsing and resolved to Python objects at the boundary via pre-interned lookup, avoiding duplicate string allocations. A future streaming iterator API will bring constant-memory reads.
 
 ### Feature coverage
 
@@ -368,7 +368,7 @@ OpenSheet Core is designed to be a faster, memory-efficient alternative to openp
 
 ### Our approach
 
-We are not trying to clone openpyxl. We are building a **fast, safe, memory-efficient core** for the most common Excel workflows. The goal is to cover the ~80% of features that people use day-to-day, while being 2–3x faster and using orders of magnitude less memory. Streaming is the default, not an opt-in mode.
+We are not trying to clone openpyxl. We are building a **fast, safe, memory-efficient core** for the most common Excel workflows. The goal is to cover the ~80% of features that people use day-to-day, while being up to 14x faster and using 2–3x less memory. Streaming is the default, not an opt-in mode.
 
 ## Roadmap
 
