@@ -81,6 +81,8 @@ pub fn read_xlsx<R: Read + Seek>(reader: R) -> Result<Vec<Sheet>, XlsxError> {
             name: info.name.clone(),
             rows: data.rows,
             merges: data.merges,
+            column_widths: data.column_widths,
+            row_heights: data.row_heights,
         });
     }
 
@@ -390,10 +392,12 @@ fn parse_cell_ref(cell_ref: &str) -> (usize, usize) {
     (row.saturating_sub(1), col)
 }
 
-/// Parsed worksheet data: rows and merge ranges.
+/// Parsed worksheet data: rows, merge ranges, column widths, and row heights.
 struct WorksheetData {
     rows: Vec<Vec<CellValue>>,
     merges: Vec<String>,
+    column_widths: HashMap<u32, f64>,
+    row_heights: HashMap<u32, f64>,
 }
 
 /// Parse a single worksheet XML file and return rows of cell values and merge ranges.
@@ -420,23 +424,81 @@ fn parse_worksheet<R: Read + Seek>(
     let mut cell_formula_text = String::new();
     let mut merges: Vec<String> = Vec::new();
     let mut in_merge_cells = false;
+    let mut column_widths: HashMap<u32, f64> = HashMap::new();
+    let mut row_heights: HashMap<u32, f64> = HashMap::new();
+    let mut in_cols = false;
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 match e.name().as_ref() {
+                    b"cols" => {
+                        in_cols = true;
+                    }
+                    b"col" if in_cols => {
+                        let mut min: u32 = 0;
+                        let mut max: u32 = 0;
+                        let mut width: f64 = 0.0;
+                        let mut custom_width = false;
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"min" => {
+                                    min = String::from_utf8_lossy(&attr.value)
+                                        .parse()
+                                        .unwrap_or(0);
+                                }
+                                b"max" => {
+                                    max = String::from_utf8_lossy(&attr.value)
+                                        .parse()
+                                        .unwrap_or(0);
+                                }
+                                b"width" => {
+                                    width = String::from_utf8_lossy(&attr.value)
+                                        .parse()
+                                        .unwrap_or(0.0);
+                                }
+                                b"customWidth" => {
+                                    custom_width =
+                                        String::from_utf8_lossy(&attr.value) == "1";
+                                }
+                                _ => {}
+                            }
+                        }
+                        if custom_width && min > 0 && max >= min {
+                            for col in min..=max {
+                                column_widths.insert(col - 1, width); // 0-based
+                            }
+                        }
+                    }
                     b"mergeCells" => {
                         in_merge_cells = true;
                     }
                     b"row" => {
-                        // Get row number from r attribute
+                        // Get row number and optional custom height from attributes
+                        let mut custom_height = false;
+                        let mut height: f64 = 0.0;
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"r" {
-                                let row_num: usize = String::from_utf8_lossy(&attr.value)
-                                    .parse()
-                                    .unwrap_or(current_row + 2);
-                                current_row = row_num - 1;
+                            match attr.key.as_ref() {
+                                b"r" => {
+                                    let row_num: usize = String::from_utf8_lossy(&attr.value)
+                                        .parse()
+                                        .unwrap_or(current_row + 2);
+                                    current_row = row_num - 1;
+                                }
+                                b"ht" => {
+                                    height = String::from_utf8_lossy(&attr.value)
+                                        .parse()
+                                        .unwrap_or(0.0);
+                                }
+                                b"customHeight" => {
+                                    custom_height =
+                                        String::from_utf8_lossy(&attr.value) == "1";
+                                }
+                                _ => {}
                             }
+                        }
+                        if custom_height && height > 0.0 {
+                            row_heights.insert(current_row as u32, height);
                         }
                         // Ensure rows vec is large enough
                         while rows.len() <= current_row {
@@ -540,10 +602,47 @@ fn parse_worksheet<R: Read + Seek>(
                     b"is" => {
                         in_inline_str = false;
                     }
+                    b"cols" => {
+                        in_cols = false;
+                    }
                     b"mergeCells" => {
                         in_merge_cells = false;
                     }
                     _ => {}
+                }
+            }
+            Ok(Event::Empty(ref e)) if in_cols && e.name().as_ref() == b"col" => {
+                let mut min: u32 = 0;
+                let mut max: u32 = 0;
+                let mut width: f64 = 0.0;
+                let mut custom_width = false;
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"min" => {
+                            min = String::from_utf8_lossy(&attr.value)
+                                .parse()
+                                .unwrap_or(0);
+                        }
+                        b"max" => {
+                            max = String::from_utf8_lossy(&attr.value)
+                                .parse()
+                                .unwrap_or(0);
+                        }
+                        b"width" => {
+                            width = String::from_utf8_lossy(&attr.value)
+                                .parse()
+                                .unwrap_or(0.0);
+                        }
+                        b"customWidth" => {
+                            custom_width = String::from_utf8_lossy(&attr.value) == "1";
+                        }
+                        _ => {}
+                    }
+                }
+                if custom_width && min > 0 && max >= min {
+                    for col in min..=max {
+                        column_widths.insert(col - 1, width); // 0-based
+                    }
                 }
             }
             Ok(Event::Empty(ref e)) if in_merge_cells && e.name().as_ref() == b"mergeCell" => {
@@ -568,7 +667,12 @@ fn parse_worksheet<R: Read + Seek>(
         buf.clear();
     }
 
-    Ok(WorksheetData { rows, merges })
+    Ok(WorksheetData {
+        rows,
+        merges,
+        column_widths,
+        row_heights,
+    })
 }
 
 /// Convert raw cell value text into a typed CellValue based on the cell type attribute.

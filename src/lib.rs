@@ -136,6 +136,21 @@ fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
     }
 }
 
+/// Convert a column letter (e.g. "A", "AA", "BZ") to a 0-based column index.
+fn col_letter_to_index(col: &str) -> PyResult<u32> {
+    let col = col.trim().to_uppercase();
+    if col.is_empty() || !col.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Invalid column letter: '{col}'"
+        )));
+    }
+    let mut index: u32 = 0;
+    for b in col.bytes() {
+        index = index * 26 + (b - b'A') as u32 + 1;
+    }
+    Ok(index - 1)
+}
+
 /// Returns version information about the native core.
 #[pyfunction]
 fn version() -> &'static str {
@@ -162,6 +177,21 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
         dict.set_item("rows", rows_to_py(py, &sheet.rows)?)?;
         let merges_list = PyList::new(py, &sheet.merges)?;
         dict.set_item("merges", merges_list)?;
+
+        // Column widths: {0-based col index -> width}
+        let col_widths_dict = PyDict::new(py);
+        for (col_idx, width) in &sheet.column_widths {
+            col_widths_dict.set_item(col_idx, width)?;
+        }
+        dict.set_item("column_widths", col_widths_dict)?;
+
+        // Row heights: {0-based row index -> height}
+        let row_heights_dict = PyDict::new(py);
+        for (row_idx, height) in &sheet.row_heights {
+            row_heights_dict.set_item(row_idx, height)?;
+        }
+        dict.set_item("row_heights", row_heights_dict)?;
+
         result.append(dict)?;
     }
 
@@ -302,6 +332,48 @@ impl XlsxWriter {
             .as_mut()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
         w.merge_cells(range)?;
+        Ok(())
+    }
+
+    /// Set the width of a column in character units.
+    ///
+    /// `column` can be a letter (e.g. "A", "AA") or a 0-based integer index.
+    /// Must be called after add_sheet() but before any write_row() calls on that sheet.
+    #[pyo3(signature = (column, width))]
+    fn set_column_width(&mut self, column: &Bound<'_, PyAny>, width: f64) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+
+        let col_index = if let Ok(s) = column.extract::<String>() {
+            col_letter_to_index(&s)?
+        } else if let Ok(i) = column.extract::<u32>() {
+            i
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "column must be a string (e.g. 'A') or an integer index",
+            ));
+        };
+
+        w.set_column_width(col_index, width)?;
+        Ok(())
+    }
+
+    /// Set the height of a row in points.
+    ///
+    /// `row` is a 1-based row number (matching Excel convention).
+    fn set_row_height(&mut self, row: u32, height: f64) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        if row == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Row number must be 1-based (1, 2, 3, ...)",
+            ));
+        }
+        w.set_row_height(row - 1, height)?;
         Ok(())
     }
 

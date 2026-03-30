@@ -14,6 +14,8 @@ def read_xlsx(path: str) -> list[dict[str, Any]]:
       - ``"name"``: sheet name (str)
       - ``"rows"``: list of lists of cell values
       - ``"merges"``: list of merged cell range strings (e.g. ``"A1:C1"``)
+      - ``"column_widths"``: dict mapping 0-based column index to width in character units
+      - ``"row_heights"``: dict mapping 0-based row index to height in points
     """
     ...
 
@@ -54,6 +56,19 @@ class XlsxWriter:
         ...
     def merge_cells(self, range: str) -> None:
         """Merge a range of cells (e.g. ``"A1:C1"``)."""
+        ...
+    def set_column_width(self, column: str | int, width: float) -> None:
+        """Set the width of a column in character units.
+
+        ``column`` can be a letter (e.g. ``"A"``, ``"AA"``) or a 0-based integer index.
+        Must be called after ``add_sheet()`` but before any ``write_row()`` calls on that sheet.
+        """
+        ...
+    def set_row_height(self, row: int, height: float) -> None:
+        """Set the height of a row in points.
+
+        ``row`` is a 1-based row number (matching Excel convention).
+        """
         ...
     def close(self) -> None:
         """Finalize and close the XLSX file."""

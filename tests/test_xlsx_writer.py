@@ -318,3 +318,152 @@ def test_merge_cells_openpyxl_interop(tmp_xlsx):
 
     sheets = opensheet_core.read_xlsx(tmp_xlsx)
     assert "A1:C1" in sheets[0]["merges"]
+
+
+# --- Column widths and row heights ---
+
+
+def test_column_width_write_and_read(tmp_xlsx):
+    """Write column widths and verify they round-trip."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Widths")
+        w.set_column_width("A", 20.0)
+        w.set_column_width("C", 35.5)
+        w.write_row(["Name", "Age", "Description"])
+        w.write_row(["Alice", 30, "Some long text here"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    col_widths = sheets[0]["column_widths"]
+    assert col_widths[0] == 20.0  # Column A
+    assert col_widths[2] == 35.5  # Column C
+    assert 1 not in col_widths    # Column B not set
+
+
+def test_column_width_with_int_index(tmp_xlsx):
+    """Set column width using 0-based integer index."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("IntIndex")
+        w.set_column_width(0, 15.0)   # Column A
+        w.set_column_width(2, 25.0)   # Column C
+        w.write_row(["a", "b", "c"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    col_widths = sheets[0]["column_widths"]
+    assert col_widths[0] == 15.0
+    assert col_widths[2] == 25.0
+
+
+def test_row_height_write_and_read(tmp_xlsx):
+    """Write row heights and verify they round-trip."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Heights")
+        w.set_row_height(1, 30.0)   # Row 1 (1-based)
+        w.set_row_height(3, 45.75)  # Row 3
+        w.write_row(["Header"])
+        w.write_row(["Normal row"])
+        w.write_row(["Tall row"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    row_heights = sheets[0]["row_heights"]
+    assert row_heights[0] == 30.0    # Row 1 (0-based index)
+    assert row_heights[2] == 45.75   # Row 3 (0-based index)
+    assert 1 not in row_heights      # Row 2 not set
+
+
+def test_column_width_and_row_height_combined(tmp_xlsx):
+    """Set both column widths and row heights on the same sheet."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Both")
+        w.set_column_width("A", 20.0)
+        w.set_column_width("B", 30.0)
+        w.set_row_height(1, 25.0)
+        w.set_row_height(2, 40.0)
+        w.write_row(["Name", "Value"])
+        w.write_row(["Alice", 42])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["column_widths"][0] == 20.0
+    assert sheets[0]["column_widths"][1] == 30.0
+    assert sheets[0]["row_heights"][0] == 25.0
+    assert sheets[0]["row_heights"][1] == 40.0
+    # Data is still correct
+    assert sheets[0]["rows"][0] == ["Name", "Value"]
+    assert sheets[0]["rows"][1] == ["Alice", 42]
+
+
+def test_column_width_multi_sheet(tmp_xlsx):
+    """Column widths are per-sheet."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Sheet1")
+        w.set_column_width("A", 10.0)
+        w.write_row(["s1"])
+        w.add_sheet("Sheet2")
+        w.set_column_width("A", 50.0)
+        w.write_row(["s2"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["column_widths"][0] == 10.0
+    assert sheets[1]["column_widths"][0] == 50.0
+
+
+def test_column_width_after_write_row_raises(tmp_xlsx):
+    """Setting column width after writing rows should raise an error."""
+    with pytest.raises(Exception, match="before writing any rows"):
+        with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Fail")
+            w.write_row(["too late"])
+            w.set_column_width("A", 20.0)
+
+
+def test_no_column_widths_or_row_heights(tmp_xlsx):
+    """Sheets without custom dimensions return empty dicts."""
+    with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+        w.add_sheet("Plain")
+        w.write_row(["no", "dimensions"])
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    assert sheets[0]["column_widths"] == {}
+    assert sheets[0]["row_heights"] == {}
+
+
+def test_row_height_zero_row_raises(tmp_xlsx):
+    """Row 0 should raise ValueError (rows are 1-based)."""
+    with pytest.raises(ValueError, match="1-based"):
+        with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Fail")
+            w.set_row_height(0, 20.0)
+
+
+def test_column_width_openpyxl_interop(tmp_xlsx):
+    """Write column widths with openpyxl, read with opensheet_core."""
+    openpyxl = pytest.importorskip("openpyxl")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.column_dimensions["A"].width = 25.0
+    ws.column_dimensions["C"].width = 40.0
+    ws.append(["Name", "Age", "Bio"])
+    wb.save(tmp_xlsx)
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    col_widths = sheets[0]["column_widths"]
+    assert abs(col_widths[0] - 25.0) < 0.1  # Column A
+    assert abs(col_widths[2] - 40.0) < 0.1  # Column C
+
+
+def test_row_height_openpyxl_interop(tmp_xlsx):
+    """Write row heights with openpyxl, read with opensheet_core."""
+    openpyxl = pytest.importorskip("openpyxl")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Header"])
+    ws.append(["Data"])
+    ws.row_dimensions[1].height = 30.0
+    ws.row_dimensions[2].height = 50.0
+    wb.save(tmp_xlsx)
+
+    sheets = opensheet_core.read_xlsx(tmp_xlsx)
+    row_heights = sheets[0]["row_heights"]
+    assert abs(row_heights[0] - 30.0) < 0.1  # Row 1
+    assert abs(row_heights[1] - 50.0) < 0.1  # Row 2

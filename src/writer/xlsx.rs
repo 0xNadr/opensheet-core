@@ -3,6 +3,8 @@ use std::io::{Seek, Write};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
+use std::collections::HashMap;
+
 use crate::types::{datetime_to_excel_serial, CellValue};
 
 /// Errors that can occur during XLSX writing.
@@ -61,9 +63,12 @@ pub struct StreamingXlsxWriter<W: Write + Seek> {
     sheets: Vec<SheetEntry>,
     current_row: u32,
     sheet_open: bool,
+    sheet_data_started: bool,
     has_dates: bool,
     has_datetimes: bool,
     pending_merges: PendingMerges,
+    pending_columns: HashMap<u32, f64>,
+    pending_row_heights: HashMap<u32, f64>,
 }
 
 impl<W: Write + Seek> StreamingXlsxWriter<W> {
@@ -74,9 +79,12 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             sheets: Vec::new(),
             current_row: 0,
             sheet_open: false,
+            sheet_data_started: false,
             has_dates: false,
             has_datetimes: false,
             pending_merges: PendingMerges { ranges: Vec::new() },
+            pending_columns: HashMap::new(),
+            pending_row_heights: HashMap::new(),
         }
     }
 
@@ -108,17 +116,46 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         self.zip()?.start_file(path, options)?;
 
-        // Write worksheet XML header
+        // Write worksheet XML header (but NOT <sheetData> yet — deferred until first row
+        // so that <cols> can be written before it if column widths are set)
         write!(
             self.zip()?,
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
              <worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" \
-             xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\
-             <sheetData>"
+             xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
         )?;
 
         self.current_row = 0;
         self.sheet_open = true;
+        self.sheet_data_started = false;
+        Ok(())
+    }
+
+    /// Flush any pending column widths and write the <sheetData> opening tag.
+    /// Called lazily before the first row is written.
+    fn start_sheet_data(&mut self) -> Result<(), XlsxWriteError> {
+        if self.sheet_data_started {
+            return Ok(());
+        }
+
+        // Write <cols> if any column widths are set
+        let columns = std::mem::take(&mut self.pending_columns);
+        if !columns.is_empty() {
+            write!(self.zip()?, "<cols>")?;
+            let mut sorted_cols: Vec<_> = columns.into_iter().collect();
+            sorted_cols.sort_by_key(|(idx, _)| *idx);
+            for (col_idx, width) in sorted_cols {
+                let col_num = col_idx + 1; // XLSX uses 1-based column numbers
+                write!(
+                    self.zip()?,
+                    "<col min=\"{col_num}\" max=\"{col_num}\" width=\"{width}\" customWidth=\"1\"/>"
+                )?;
+            }
+            write!(self.zip()?, "</cols>")?;
+        }
+
+        write!(self.zip()?, "<sheetData>")?;
+        self.sheet_data_started = true;
         Ok(())
     }
 
@@ -130,10 +167,22 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             ));
         }
 
+        self.start_sheet_data()?;
+
         self.current_row += 1;
         let row_num = self.current_row;
 
-        write!(self.zip()?, "<row r=\"{row_num}\">")?;
+        // Check for custom row height (0-based index)
+        let row_idx = row_num - 1;
+        let custom_height = self.pending_row_heights.get(&row_idx).copied();
+        if let Some(height) = custom_height {
+            write!(
+                self.zip()?,
+                "<row r=\"{row_num}\" ht=\"{height}\" customHeight=\"1\">"
+            )?;
+        } else {
+            write!(self.zip()?, "<row r=\"{row_num}\">")?;
+        }
 
         for (col_idx, cell) in cells.iter().enumerate() {
             let col_letter = col_index_to_letter(col_idx);
@@ -234,10 +283,43 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         Ok(())
     }
 
+    /// Set the width of a column (0-based index) in character units.
+    /// Must be called before any rows are written (i.e., after add_sheet but before write_row).
+    pub fn set_column_width(&mut self, col_index: u32, width: f64) -> Result<(), XlsxWriteError> {
+        if !self.sheet_open {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        if self.sheet_data_started {
+            return Err(XlsxWriteError::InvalidState(
+                "Column widths must be set before writing any rows.".to_string(),
+            ));
+        }
+        self.pending_columns.insert(col_index, width);
+        Ok(())
+    }
+
+    /// Set the height of a row (0-based index) in points.
+    pub fn set_row_height(&mut self, row_index: u32, height: f64) -> Result<(), XlsxWriteError> {
+        if !self.sheet_open {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        self.pending_row_heights.insert(row_index, height);
+        Ok(())
+    }
+
     /// Close the current sheet's XML.
     fn close_sheet(&mut self) -> Result<(), XlsxWriteError> {
         if self.sheet_open {
+            // Ensure <sheetData> was opened (even for sheets with no rows)
+            self.start_sheet_data()?;
             write!(self.zip()?, "</sheetData>")?;
+
+            // Clear per-sheet state
+            self.pending_row_heights.clear();
 
             // Write mergeCells if any
             let merges = std::mem::take(&mut self.pending_merges.ranges);

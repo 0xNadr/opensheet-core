@@ -35,6 +35,10 @@ pub struct Sheet {
     pub rows: Vec<Vec<CellValue>>,
     /// Merged cell ranges, e.g. ["A1:B2", "C3:D4"].
     pub merges: Vec<std::string::String>,
+    /// Column widths: 0-based column index -> width in character units.
+    pub column_widths: std::collections::HashMap<u32, f64>,
+    /// Row heights: 0-based row index -> height in points.
+    pub row_heights: std::collections::HashMap<u32, f64>,
 }
 
 /// Convert an Excel serial number to (year, month, day, hour, minute, second, microsecond).
