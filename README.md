@@ -422,7 +422,7 @@ We are not trying to clone openpyxl. We are building a **fast, safe, memory-effi
 
 ## Project Status
 
-**v0.2.0** (in progress) — streaming reader and writer with formula, date/time, merged cell, column width/row height, freeze pane, auto-filter, number format, cell styling, and pandas DataFrame support. 135 passing tests and prebuilt wheels on PyPI. The API may change before 1.0.
+**v0.2.0** — streaming reader and writer with formula, date/time, merged cell, column width/row height, freeze pane, auto-filter, number format, cell styling, and pandas DataFrame support. 135 passing tests and prebuilt wheels on PyPI. The API may change before 1.0.
 
 ## Contributing
 

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "opensheet-core"
-version = "0.1.1"
+version = "0.2.0"
 description = "A fast, memory-efficient spreadsheet I/O library for Python, powered by Rust"
 readme = "README.md"
 license = { text = "MIT" }

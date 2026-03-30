@@ -2,12 +2,12 @@
 
 import os
 import sys
-import time
 import tempfile
-import tracemalloc
 
 import openpyxl
 import opensheet_core
+
+from bench_utils import bench, format_bytes, format_time, generate_row
 
 
 def generate_test_file(path, rows, cols):
@@ -16,33 +16,17 @@ def generate_test_file(path, rows, cols):
     ws = wb.active
     ws.title = "Benchmark"
 
-    # Header
     ws.append([f"col_{i}" for i in range(cols)])
 
-    # Data rows with mixed types
     for r in range(rows):
-        row = []
-        for c in range(cols):
-            match c % 4:
-                case 0:
-                    row.append(f"text_{r}_{c}")
-                case 1:
-                    row.append(r * cols + c)
-                case 2:
-                    row.append((r * cols + c) * 0.123)
-                case 3:
-                    row.append(r % 2 == 0)
-        ws.append(row)
+        ws.append(generate_row(r, cols))
 
     wb.save(path)
     return os.path.getsize(path)
 
 
-def bench_openpyxl_read(path):
+def do_openpyxl_read(path):
     """Read all cells with openpyxl."""
-    tracemalloc.start()
-    t0 = time.perf_counter()
-
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
     row_count = 0
@@ -51,33 +35,30 @@ def bench_openpyxl_read(path):
         _ = list(row)
     wb.close()
 
-    elapsed = time.perf_counter() - t0
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    return elapsed, peak, row_count
 
-
-def bench_opensheet_read(path):
+def do_opensheet_read(path):
     """Read all cells with opensheet_core."""
-    tracemalloc.start()
-    t0 = time.perf_counter()
-
     rows = opensheet_core.read_sheet(path)
-    row_count = len(rows)
-
-    elapsed = time.perf_counter() - t0
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    return elapsed, peak, row_count
+    _ = len(rows)
 
 
-def format_mem(bytes):
-    if bytes < 1024:
-        return f"{bytes} B"
-    elif bytes < 1024 * 1024:
-        return f"{bytes / 1024:.1f} KB"
-    else:
-        return f"{bytes / (1024 * 1024):.1f} MB"
+def format_speed_relative(ratio):
+    if ratio == float("inf"):
+        return "inf faster"
+    if ratio >= 1:
+        return f"{ratio:.1f}x faster"
+    return f"{1 / ratio:.1f}x slower"
+
+
+def format_memory_relative(os_mem, op_mem):
+    if os_mem == 0 and op_mem == 0:
+        return "no measurable RSS delta"
+    if os_mem == 0:
+        return "opensheet ~0 RSS delta"
+    ratio = op_mem / os_mem
+    if ratio >= 1:
+        return f"{ratio:.1f}x less RSS delta"
+    return f"{1 / ratio:.1f}x more RSS delta"
 
 
 def run_benchmark(rows, cols, runs=3):
@@ -90,52 +71,37 @@ def run_benchmark(rows, cols, runs=3):
 
     try:
         file_size = generate_test_file(path, rows, cols)
-        print(f"File size: {format_mem(file_size)}")
+        print(f"File size: {format_bytes(file_size)}")
         print()
 
         # Warm up
-        bench_opensheet_read(path)
-        bench_openpyxl_read(path)
+        do_opensheet_read(path)
+        do_openpyxl_read(path)
 
-        # Benchmark opensheet_core
-        os_times, os_mems = [], []
-        for _ in range(runs):
-            t, m, _ = bench_opensheet_read(path)
-            os_times.append(t)
-            os_mems.append(m)
+        # Benchmark
+        os_time, os_mem = bench(do_opensheet_read, path, runs=runs)
+        op_time, op_mem = bench(do_openpyxl_read, path, runs=runs)
 
-        # Benchmark openpyxl
-        op_times, op_mems = [], []
-        for _ in range(runs):
-            t, m, _ = bench_openpyxl_read(path)
-            op_times.append(t)
-            op_mems.append(m)
+        speedup = op_time / os_time if os_time > 0 else float("inf")
+        speed_text = format_speed_relative(speedup)
+        mem_text = format_memory_relative(os_mem, op_mem)
 
-        os_avg = sum(os_times) / len(os_times)
-        op_avg = sum(op_times) / len(op_times)
-        os_mem = sum(os_mems) / len(os_mems)
-        op_mem = sum(op_mems) / len(op_mems)
-
-        speedup = op_avg / os_avg if os_avg > 0 else float("inf")
-        mem_ratio = op_mem / os_mem if os_mem > 0 else float("inf")
-
-        print(f"  {'Library':<20} {'Time (avg)':<15} {'Peak Memory':<15}")
+        print(f"  {'Library':<20} {'Time (min)':<15} {'Peak RSS Δ':<15}")
         print(f"  {'-'*50}")
-        print(f"  {'opensheet_core':<20} {os_avg*1000:.1f} ms{'':<8} {format_mem(os_mem):<15}")
-        print(f"  {'openpyxl':<20} {op_avg*1000:.1f} ms{'':<8} {format_mem(op_mem):<15}")
+        print(f"  {'opensheet_core':<20} {format_time(os_time):<15} {format_bytes(os_mem):<15}")
+        print(f"  {'openpyxl':<20} {format_time(op_time):<15} {format_bytes(op_mem):<15}")
         print()
-        print(f"  Speed:  opensheet_core is {speedup:.1f}x faster")
-        print(f"  Memory: opensheet_core uses {mem_ratio:.1f}x less peak memory")
+        print(f"  Speed:  opensheet_core is {speed_text}")
+        print(f"  Memory: opensheet_core uses {mem_text}")
 
         return {
             "rows": rows,
             "cols": cols,
-            "opensheet_time": os_avg,
-            "openpyxl_time": op_avg,
+            "opensheet_time": os_time,
+            "openpyxl_time": op_time,
             "opensheet_mem": os_mem,
             "openpyxl_mem": op_mem,
             "speedup": speedup,
-            "mem_ratio": mem_ratio,
         }
     finally:
         os.unlink(path)
@@ -146,6 +112,7 @@ def main():
     print(f"opensheet_core {opensheet_core.__version__}")
     print(f"openpyxl {openpyxl.__version__}")
     print(f"Python {sys.version.split()[0]}")
+    print(f"Memory: peak RSS delta over pre-workload baseline")
 
     configs = [
         (1_000, 10),
@@ -163,11 +130,15 @@ def main():
     print(f"\n{'='*60}")
     print("Summary")
     print(f"{'='*60}")
-    print(f"  {'Config':<20} {'Speedup':<12} {'Mem Savings':<12}")
-    print(f"  {'-'*44}")
+    print(f"  {'Config':<20} {'Speed':<16} {'Memory':<24}")
+    print(f"  {'-'*56}")
     for r in results:
         config = f"{r['rows']:,} x {r['cols']}"
-        print(f"  {config:<20} {r['speedup']:.1f}x{'':<8} {r['mem_ratio']:.1f}x")
+        print(
+            f"  {config:<20} "
+            f"{format_speed_relative(r['speedup']):<16} "
+            f"{format_memory_relative(r['opensheet_mem'], r['openpyxl_mem']):<24}"
+        )
 
 
 if __name__ == "__main__":

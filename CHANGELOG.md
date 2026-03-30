@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-30
+
 ### Added
 - Cell styling support: `CellStyle` and `StyledCell` types for fonts (bold, italic, underline, name, size, color), fills (solid color), borders (thin, medium, thick, dashed, dotted, double with per-side control), alignment (horizontal, vertical, wrap text, rotation), and number formats on styled cells
 - Reader returns `StyledCell` for cells with visual styling; plain cells remain unchanged (backward compatible)
@@ -45,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Benchmarks vs openpyxl with runnable benchmark script
 - Zero Python dependencies
 
-[Unreleased]: https://github.com/0xNadr/opensheet-core/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/0xNadr/opensheet-core/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/0xNadr/opensheet-core/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/0xNadr/opensheet-core/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/0xNadr/opensheet-core/releases/tag/v0.1.0
