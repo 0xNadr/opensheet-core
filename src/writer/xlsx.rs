@@ -469,8 +469,8 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                 self.has_datetimes = true;
             }
             CellValue::FormattedNumber { value, format_code } => {
-                let xf_id = if style_id.is_some() {
-                    style_id.unwrap()
+                let xf_id = if let Some(id) = style_id {
+                    id
                 } else {
                     self.register_format(format_code)
                 };
@@ -1360,10 +1360,10 @@ mod tests {
             writer
                 .write_row(&[CellValue::StyledCell {
                     value: Box::new(CellValue::String("Bold text".to_string())),
-                    style: CellStyle {
+                    style: Box::new(CellStyle {
                         bold: true,
                         ..CellStyle::default()
-                    },
+                    }),
                 }])
                 .unwrap();
             writer.close().unwrap();
@@ -1395,10 +1395,10 @@ mod tests {
             writer
                 .write_row(&[CellValue::StyledCell {
                     value: Box::new(CellValue::Number(42.0)),
-                    style: CellStyle {
+                    style: Box::new(CellStyle {
                         fill_color: Some("FFFF00".to_string()),
                         ..CellStyle::default()
-                    },
+                    }),
                 }])
                 .unwrap();
             writer.close().unwrap();
@@ -1430,14 +1430,14 @@ mod tests {
             writer
                 .write_row(&[CellValue::StyledCell {
                     value: Box::new(CellValue::String("Bordered".to_string())),
-                    style: CellStyle {
+                    style: Box::new(CellStyle {
                         border_left: Some("thin".to_string()),
                         border_right: Some("thin".to_string()),
                         border_top: Some("thin".to_string()),
                         border_bottom: Some("thin".to_string()),
                         border_color: Some("000000".to_string()),
                         ..CellStyle::default()
-                    },
+                    }),
                 }])
                 .unwrap();
             writer.close().unwrap();
@@ -1472,12 +1472,12 @@ mod tests {
             writer
                 .write_row(&[CellValue::StyledCell {
                     value: Box::new(CellValue::String("Centered".to_string())),
-                    style: CellStyle {
+                    style: Box::new(CellStyle {
                         horizontal_alignment: Some("center".to_string()),
                         vertical_alignment: Some("top".to_string()),
                         wrap_text: true,
                         ..CellStyle::default()
-                    },
+                    }),
                 }])
                 .unwrap();
             writer.close().unwrap();

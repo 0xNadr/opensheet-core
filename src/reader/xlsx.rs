@@ -679,7 +679,7 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
             let fill = parsed_fills.get(xf.fill_id);
             let border = parsed_borders.get(xf.border_id);
 
-            let has_font_styling = font.map_or(false, |f| {
+            let has_font_styling = font.is_some_and(|f| {
                 f.bold
                     || f.italic
                     || f.underline
@@ -688,11 +688,11 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
                     || f.color.is_some()
             });
 
-            let has_fill_styling = fill.map_or(false, |f| {
+            let has_fill_styling = fill.is_some_and(|f| {
                 f.pattern_type.as_deref() == Some("solid") && f.fg_color.is_some()
             });
 
-            let has_border_styling = border.map_or(false, |b| {
+            let has_border_styling = border.is_some_and(|b| {
                 b.left.style.is_some()
                     || b.right.style.is_some()
                     || b.top.style.is_some()
@@ -1119,7 +1119,7 @@ fn parse_worksheet<R: Read + Seek>(
                             let final_value = if let Some(style) = cell_style_data {
                                 CellValue::StyledCell {
                                     value: Box::new(value),
-                                    style,
+                                    style: Box::new(style),
                                 }
                             } else {
                                 value

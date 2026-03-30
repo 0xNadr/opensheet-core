@@ -86,7 +86,7 @@ pub enum CellValue {
     /// A cell with styling (fonts, fills, borders, alignment).
     StyledCell {
         value: Box<CellValue>,
-        style: CellStyle,
+        style: Box<CellStyle>,
     },
     Empty,
 }

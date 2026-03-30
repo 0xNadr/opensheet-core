@@ -135,7 +135,7 @@ fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
         let cell_style = py_cell_style_to_rust(&style_ref);
         CellValue::StyledCell {
             value: Box::new(inner_cell),
-            style: cell_style,
+            style: Box::new(cell_style),
         }
     } else if let Ok(fc) = obj.extract::<PyRef<'_, FormattedCell>>() {
         // Extract the numeric value from the inner value
