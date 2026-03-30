@@ -24,6 +24,9 @@ __all__ = [
     "StyledCell",
     "read_xlsx_df",
     "to_xlsx",
+    "xlsx_to_markdown",
+    "xlsx_to_text",
+    "xlsx_to_chunks",
 ]
 
 
@@ -43,3 +46,21 @@ def to_xlsx(*args, **kwargs):
     """
     from opensheet_core.pandas import to_xlsx as _to_xlsx
     return _to_xlsx(*args, **kwargs)
+
+
+def xlsx_to_markdown(*args, **kwargs):
+    """Convert an XLSX file to markdown table(s) for LLM consumption."""
+    from opensheet_core.extract import xlsx_to_markdown as _fn
+    return _fn(*args, **kwargs)
+
+
+def xlsx_to_text(*args, **kwargs):
+    """Convert an XLSX file to plain text for search indexes."""
+    from opensheet_core.extract import xlsx_to_text as _fn
+    return _fn(*args, **kwargs)
+
+
+def xlsx_to_chunks(*args, **kwargs):
+    """Convert an XLSX file to embedding-sized markdown chunks for RAG."""
+    from opensheet_core.extract import xlsx_to_chunks as _fn
+    return _fn(*args, **kwargs)
