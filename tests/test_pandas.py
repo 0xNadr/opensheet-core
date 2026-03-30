@@ -294,3 +294,56 @@ class TestToXlsx:
         # None row
         assert len(rows[2]) == 0 or rows[2] == [None]
         assert rows[3] == ["world"]
+
+    def test_write_multiindex(self, tmp_xlsx):
+        """MultiIndex (tuple) index values are written correctly."""
+        arrays = [["a", "a", "b"], [1, 2, 1]]
+        idx = pd.MultiIndex.from_arrays(arrays, names=["letter", "number"])
+        df = pd.DataFrame({"Val": [10, 20, 30]}, index=idx)
+        opensheet_core.to_xlsx(df, tmp_xlsx, index=True)
+
+        result = opensheet_core.read_xlsx_df(tmp_xlsx)
+        assert list(result.columns) == ["letter", "number", "Val"]
+        assert result.iloc[0]["letter"] == "a"
+        assert result.iloc[0]["number"] == 1
+        assert result.iloc[0]["Val"] == 10
+
+    def test_write_python_date_passthrough(self, tmp_xlsx):
+        """Python datetime.date values pass through directly."""
+        df = pd.DataFrame({"D": [datetime.date(2025, 1, 1)]})
+        # Force object dtype so pandas doesn't convert to Timestamp
+        df["D"] = df["D"].astype(object)
+        opensheet_core.to_xlsx(df, tmp_xlsx)
+
+        result = opensheet_core.read_xlsx_df(tmp_xlsx)
+        assert result.iloc[0]["D"] == datetime.date(2025, 1, 1)
+
+    def test_write_python_datetime_passthrough(self, tmp_xlsx):
+        """Python datetime.datetime values pass through directly."""
+        df = pd.DataFrame({"T": [datetime.datetime(2025, 1, 1, 10, 30)]})
+        df["T"] = df["T"].astype(object)
+        opensheet_core.to_xlsx(df, tmp_xlsx)
+
+        result = opensheet_core.read_xlsx_df(tmp_xlsx)
+        assert result.iloc[0]["T"] == datetime.datetime(2025, 1, 1, 10, 30)
+
+    def test_write_unsupported_type_stringified(self, tmp_xlsx):
+        """Unsupported types are stringified via str()."""
+        df = pd.DataFrame({"A": [complex(1, 2)]})
+        df["A"] = df["A"].astype(object)
+        opensheet_core.to_xlsx(df, tmp_xlsx)
+
+        result = opensheet_core.read_xlsx_df(tmp_xlsx)
+        assert result.iloc[0]["A"] == "(1+2j)"
+
+    def test_read_no_header_ragged_rows(self, tmp_xlsx):
+        """No-header mode pads ragged rows correctly."""
+        with opensheet_core.XlsxWriter(tmp_xlsx) as w:
+            w.add_sheet("Data")
+            w.write_row(["a", "b", "c"])
+            w.write_row(["d"])
+
+        df = opensheet_core.read_xlsx_df(tmp_xlsx, header=False)
+        assert len(df) == 2
+        assert len(df.columns) == 3
+        assert pd.isna(df.iloc[1][1])

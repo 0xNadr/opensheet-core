@@ -106,20 +106,13 @@ def to_xlsx(
             return float(val)
         if isinstance(val, (np.bool_,)):
             return bool(val)
-        if isinstance(val, np.datetime64):
+        if isinstance(val, (pd.Timestamp, np.datetime64)):
             ts = pd.Timestamp(val)
             if ts.hour == 0 and ts.minute == 0 and ts.second == 0 and ts.microsecond == 0:
                 return datetime.date(ts.year, ts.month, ts.day)
             return datetime.datetime(
                 ts.year, ts.month, ts.day,
                 ts.hour, ts.minute, ts.second, ts.microsecond,
-            )
-        if isinstance(val, pd.Timestamp):
-            if val.hour == 0 and val.minute == 0 and val.second == 0 and val.microsecond == 0:
-                return datetime.date(val.year, val.month, val.day)
-            return datetime.datetime(
-                val.year, val.month, val.day,
-                val.hour, val.minute, val.second, val.microsecond,
             )
         if isinstance(val, (datetime.datetime, datetime.date)):
             return val
