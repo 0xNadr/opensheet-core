@@ -347,3 +347,30 @@ class TestToXlsx:
         assert len(df) == 2
         assert len(df.columns) == 3
         assert pd.isna(df.iloc[1][1])
+
+    def test_write_nat_values(self, tmp_xlsx):
+        """pd.NaT values in datetime columns are written as empty cells."""
+        df = pd.DataFrame({"T": pd.to_datetime(["2025-01-01", None])})
+        opensheet_core.to_xlsx(df, tmp_xlsx)
+
+        rows = opensheet_core.read_sheet(tmp_xlsx)
+        assert rows[0] == ["T"]
+        assert rows[1] == [datetime.date(2025, 1, 1)]
+        assert len(rows[2]) == 0 or rows[2] == [None]
+
+
+class TestImportError:
+    def test_read_xlsx_df_without_pandas(self, monkeypatch):
+        """read_xlsx_df raises ImportError when pandas is not installed."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "pandas":
+                raise ImportError("No module named 'pandas'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        with pytest.raises(ImportError, match="pandas is required"):
+            from opensheet_core.pandas import _check_pandas
+            _check_pandas()
