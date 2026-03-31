@@ -7,6 +7,28 @@ use zip::ZipArchive;
 
 use crate::types::{excel_serial_to_datetime, CellStyle, CellValue, Sheet};
 
+// ---------- Security limits ----------
+
+/// Maximum decompressed size of a single ZIP entry (256 MB).
+const MAX_ZIP_ENTRY_SIZE: u64 = 256 * 1024 * 1024;
+
+/// Maximum number of shared strings allowed (2 million).
+const MAX_SHARED_STRINGS: usize = 2_000_000;
+
+/// Maximum number of rows allowed per sheet (matches Excel's limit).
+const MAX_ROWS_PER_SHEET: usize = 1_048_576;
+
+/// Check that a ZIP entry's uncompressed size is within limits.
+fn check_zip_entry_size(name: &str, size: u64) -> Result<(), XlsxError> {
+    if size > MAX_ZIP_ENTRY_SIZE {
+        return Err(XlsxError::InvalidStructure(format!(
+            "ZIP entry '{name}' uncompressed size ({size} bytes) exceeds limit \
+             ({MAX_ZIP_ENTRY_SIZE} bytes). File may be malicious."
+        )));
+    }
+    Ok(())
+}
+
 /// Errors that can occur during XLSX reading.
 #[derive(Debug)]
 pub enum XlsxError {
@@ -68,6 +90,45 @@ pub struct DefinedName {
     pub sheet_index: Option<usize>,
 }
 
+/// Document core properties from docProps/core.xml.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentProperties {
+    pub title: Option<String>,
+    pub subject: Option<String>,
+    pub creator: Option<String>,
+    pub keywords: Option<String>,
+    pub description: Option<String>,
+    pub last_modified_by: Option<String>,
+    pub category: Option<String>,
+    pub created: Option<String>,
+    pub modified: Option<String>,
+}
+
+/// A custom document property (key-value pair).
+#[derive(Debug, Clone)]
+pub struct CustomProperty {
+    pub name: String,
+    pub value: String,
+}
+
+/// A data validation rule applied to a cell range.
+#[derive(Debug, Clone)]
+pub struct DataValidation {
+    pub validation_type: String,
+    pub operator: Option<String>,
+    pub sqref: String,
+    pub formula1: Option<String>,
+    pub formula2: Option<String>,
+    pub allow_blank: bool,
+    pub show_input_message: bool,
+    pub show_error_message: bool,
+    pub prompt_title: Option<String>,
+    pub prompt: Option<String>,
+    pub error_title: Option<String>,
+    pub error_message: Option<String>,
+    pub error_style: Option<String>,
+}
+
 /// Read an XLSX file and return all sheets plus the shared string table.
 ///
 /// Cells referencing shared strings are stored as `CellValue::SharedString(index)`
@@ -103,6 +164,7 @@ pub fn read_xlsx<R: Read + Seek>(
             freeze_pane: data.freeze_pane,
             auto_filter: data.auto_filter,
             state: info.state.clone(),
+            data_validations: data.data_validations,
         });
     }
 
@@ -152,6 +214,7 @@ pub fn read_single_sheet<R: Read + Seek>(
         freeze_pane: data.freeze_pane,
         auto_filter: data.auto_filter,
         state: info.state.clone(),
+        data_validations: data.data_validations,
     };
 
     Ok((sheet, shared_strings))
@@ -165,12 +228,142 @@ pub fn read_sheet_names<R: Read + Seek>(reader: R) -> Result<Vec<String>, XlsxEr
     Ok(sheet_infos.into_iter().map(|s| s.name).collect())
 }
 
+/// Read document properties (core + custom) from an XLSX file.
+pub fn read_document_properties<R: Read + Seek>(
+    reader: R,
+) -> Result<(DocumentProperties, Vec<CustomProperty>), XlsxError> {
+    let mut archive = ZipArchive::new(reader)?;
+    let core = parse_core_properties(&mut archive)?;
+    let custom = parse_custom_properties(&mut archive)?;
+    Ok((core, custom))
+}
+
 /// Read defined names (named ranges) without parsing worksheet data.
 pub fn read_defined_names<R: Read + Seek>(reader: R) -> Result<Vec<DefinedName>, XlsxError> {
     let mut archive = ZipArchive::new(reader)?;
     let rels = parse_workbook_rels(&mut archive)?;
     let (_, defined_names) = parse_workbook(&mut archive, &rels)?;
     Ok(defined_names)
+}
+
+/// Parse docProps/core.xml for Dublin Core metadata.
+fn parse_core_properties<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> Result<DocumentProperties, XlsxError> {
+    let file = match archive.by_name("docProps/core.xml") {
+        Ok(f) => f,
+        Err(_) => return Ok(DocumentProperties::default()),
+    };
+
+    let mut reader = Reader::from_reader(BufReader::new(file));
+    let mut buf = Vec::new();
+    let mut props = DocumentProperties::default();
+    let mut current_tag: Option<String> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let local = e.local_name();
+                let tag = std::str::from_utf8(local.as_ref()).unwrap_or("").to_string();
+                match tag.as_str() {
+                    "title" | "subject" | "creator" | "keywords" | "description"
+                    | "lastModifiedBy" | "category" | "created" | "modified" => {
+                        current_tag = Some(tag);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if let Some(ref tag) = current_tag {
+                    if let Ok(text) = e.unescape() {
+                        let text = text.to_string();
+                        match tag.as_str() {
+                            "title" => props.title = Some(text),
+                            "subject" => props.subject = Some(text),
+                            "creator" => props.creator = Some(text),
+                            "keywords" => props.keywords = Some(text),
+                            "description" => props.description = Some(text),
+                            "lastModifiedBy" => props.last_modified_by = Some(text),
+                            "category" => props.category = Some(text),
+                            "created" => props.created = Some(text),
+                            "modified" => props.modified = Some(text),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(_)) => {
+                current_tag = None;
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(props)
+}
+
+/// Parse docProps/custom.xml for custom properties.
+fn parse_custom_properties<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> Result<Vec<CustomProperty>, XlsxError> {
+    let file = match archive.by_name("docProps/custom.xml") {
+        Ok(f) => f,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut reader = Reader::from_reader(BufReader::new(file));
+    let mut buf = Vec::new();
+    let mut properties = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut in_value_tag = false;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let local = e.local_name();
+                let tag = std::str::from_utf8(local.as_ref()).unwrap_or("");
+                if tag == "property" {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"name" {
+                            current_name =
+                                Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                    }
+                } else if current_name.is_some() {
+                    in_value_tag = true;
+                }
+            }
+            Ok(Event::Text(ref e)) if in_value_tag => {
+                if let Some(ref name) = current_name {
+                    if let Ok(text) = e.unescape() {
+                        properties.push(CustomProperty {
+                            name: name.clone(),
+                            value: text.to_string(),
+                        });
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let local = e.local_name();
+                let tag = std::str::from_utf8(local.as_ref()).unwrap_or("");
+                if tag == "property" {
+                    current_name = None;
+                    in_value_tag = false;
+                } else if in_value_tag {
+                    in_value_tag = false;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(properties)
 }
 
 /// Parse xl/_rels/workbook.xml.rels to get rId -> target path mapping.
@@ -183,6 +376,7 @@ fn parse_workbook_rels<R: Read + Seek>(
         Ok(f) => f,
         Err(_) => return Ok(rels),
     };
+    check_zip_entry_size("xl/_rels/workbook.xml.rels", file.size())?;
 
     let mut reader = Reader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
@@ -229,6 +423,7 @@ fn parse_workbook<R: Read + Seek>(
     rels: &HashMap<String, String>,
 ) -> Result<(Vec<SheetInfo>, Vec<DefinedName>), XlsxError> {
     let file = archive.by_name("xl/workbook.xml")?;
+    check_zip_entry_size("xl/workbook.xml", file.size())?;
     let mut reader = Reader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
     let mut sheets = Vec::new();
@@ -315,6 +510,8 @@ fn parse_shared_strings<R: Read + Seek>(
         Err(_) => return Ok(Vec::new()),
     };
 
+    check_zip_entry_size("xl/sharedStrings.xml", file.size())?;
+
     let mut reader = Reader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
     let mut strings = Vec::new();
@@ -326,6 +523,12 @@ fn parse_shared_strings<R: Read + Seek>(
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"si" => {
+                    if strings.len() >= MAX_SHARED_STRINGS {
+                        return Err(XlsxError::InvalidStructure(format!(
+                            "Shared string count exceeds limit ({MAX_SHARED_STRINGS}). \
+                             File may be malicious."
+                        )));
+                    }
                     in_si = true;
                     current_string.clear();
                 }
@@ -420,6 +623,7 @@ fn parse_styles<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<Style
         Ok(f) => f,
         Err(_) => return Ok(Vec::new()),
     };
+    check_zip_entry_size("xl/styles.xml", file.size())?;
 
     let mut reader = Reader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
@@ -1029,7 +1233,7 @@ fn parse_f64_from_bytes(bytes: &[u8]) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Parsed worksheet data: rows, merge ranges, column widths, row heights, freeze pane, and auto-filter.
+/// Parsed worksheet data: rows, merge ranges, column widths, row heights, freeze pane, auto-filter, and data validations.
 struct WorksheetData {
     rows: Vec<Vec<CellValue>>,
     merges: Vec<String>,
@@ -1037,6 +1241,7 @@ struct WorksheetData {
     row_heights: HashMap<u32, f64>,
     freeze_pane: Option<(u32, u32)>,
     auto_filter: Option<String>,
+    data_validations: Vec<DataValidation>,
 }
 
 /// Parse a single worksheet XML file and return rows of cell values and merge ranges.
@@ -1083,6 +1288,7 @@ fn parse_worksheet<R: Read + Seek>(
 
     // Main parse
     let file = archive.by_name(path)?;
+    check_zip_entry_size(path, file.size())?;
     let mut reader = Reader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
 
@@ -1108,6 +1314,12 @@ fn parse_worksheet<R: Read + Seek>(
     let mut in_cols = false;
     let mut freeze_pane: Option<(u32, u32)> = None;
     let mut auto_filter: Option<String> = None;
+    let mut data_validations: Vec<DataValidation> = Vec::new();
+    let mut in_data_validation = false;
+    let mut current_dv: Option<DataValidation> = None;
+    let mut in_dv_formula1 = false;
+    let mut in_dv_formula2 = false;
+    let mut dv_formula_text = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -1177,6 +1389,80 @@ fn parse_worksheet<R: Read + Seek>(
                     b"mergeCells" => {
                         in_merge_cells = true;
                     }
+                    b"dataValidations" => {}
+                    b"dataValidation" => {
+                        in_data_validation = true;
+                        let mut dv = DataValidation {
+                            validation_type: String::new(),
+                            operator: None,
+                            sqref: String::new(),
+                            formula1: None,
+                            formula2: None,
+                            allow_blank: false,
+                            show_input_message: false,
+                            show_error_message: false,
+                            prompt_title: None,
+                            prompt: None,
+                            error_title: None,
+                            error_message: None,
+                            error_style: None,
+                        };
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"type" => {
+                                    dv.validation_type =
+                                        String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                b"operator" => {
+                                    dv.operator =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                b"sqref" => {
+                                    dv.sqref =
+                                        String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                b"allowBlank" => {
+                                    dv.allow_blank = attr.value.as_ref() == b"1";
+                                }
+                                b"showInputMessage" => {
+                                    dv.show_input_message = attr.value.as_ref() == b"1";
+                                }
+                                b"showErrorMessage" => {
+                                    dv.show_error_message = attr.value.as_ref() == b"1";
+                                }
+                                b"promptTitle" => {
+                                    dv.prompt_title =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                b"prompt" => {
+                                    dv.prompt =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                b"errorTitle" => {
+                                    dv.error_title =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                b"error" => {
+                                    dv.error_message =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                b"errorStyle" => {
+                                    dv.error_style =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                _ => {}
+                            }
+                        }
+                        current_dv = Some(dv);
+                    }
+                    b"formula1" if in_data_validation => {
+                        in_dv_formula1 = true;
+                        dv_formula_text.clear();
+                    }
+                    b"formula2" if in_data_validation => {
+                        in_dv_formula2 = true;
+                        dv_formula_text.clear();
+                    }
                     b"row" => {
                         // Get row number and optional custom height from attributes
                         let mut custom_height = false;
@@ -1204,6 +1490,12 @@ fn parse_worksheet<R: Read + Seek>(
                             row_heights.insert(current_row as u32, height);
                         }
                         // Ensure rows vec is large enough
+                        if current_row >= MAX_ROWS_PER_SHEET {
+                            return Err(XlsxError::InvalidStructure(format!(
+                                "Row count exceeds limit ({MAX_ROWS_PER_SHEET}). \
+                                 File may be malicious."
+                            )));
+                        }
                         while rows.len() <= current_row {
                             rows.push(Vec::new());
                         }
@@ -1344,6 +1636,32 @@ fn parse_worksheet<R: Read + Seek>(
                     b"mergeCells" => {
                         in_merge_cells = false;
                     }
+                    b"dataValidation" => {
+                        if let Some(mut dv) = current_dv.take() {
+                            if in_dv_formula1 {
+                                dv.formula1 = Some(std::mem::take(&mut dv_formula_text));
+                                in_dv_formula1 = false;
+                            }
+                            if in_dv_formula2 {
+                                dv.formula2 = Some(std::mem::take(&mut dv_formula_text));
+                                in_dv_formula2 = false;
+                            }
+                            data_validations.push(dv);
+                        }
+                        in_data_validation = false;
+                    }
+                    b"formula1" if in_data_validation => {
+                        if let Some(ref mut dv) = current_dv {
+                            dv.formula1 = Some(std::mem::take(&mut dv_formula_text));
+                        }
+                        in_dv_formula1 = false;
+                    }
+                    b"formula2" if in_data_validation => {
+                        if let Some(ref mut dv) = current_dv {
+                            dv.formula2 = Some(std::mem::take(&mut dv_formula_text));
+                        }
+                        in_dv_formula2 = false;
+                    }
                     _ => {}
                 }
             }
@@ -1411,6 +1729,10 @@ fn parse_worksheet<R: Read + Seek>(
                     }
                 }
             }
+            Ok(Event::Text(ref e)) if in_dv_formula1 || in_dv_formula2 => {
+                let text = e.unescape().unwrap_or_default();
+                dv_formula_text.push_str(&text);
+            }
             Ok(Event::Text(ref e)) if in_formula => {
                 let text = e.unescape().unwrap_or_default();
                 cell_formula_text.push_str(&text);
@@ -1433,6 +1755,7 @@ fn parse_worksheet<R: Read + Seek>(
         row_heights,
         freeze_pane,
         auto_filter,
+        data_validations,
     })
 }
 

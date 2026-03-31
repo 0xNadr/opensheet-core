@@ -146,6 +146,23 @@ struct DefinedNameEntry {
     sheet_index: Option<usize>,
 }
 
+/// A data validation entry for the writer.
+struct DataValidationEntry {
+    validation_type: String,
+    operator: Option<String>,
+    sqref: String,
+    formula1: Option<String>,
+    formula2: Option<String>,
+    allow_blank: bool,
+    show_input_message: bool,
+    show_error_message: bool,
+    prompt_title: Option<String>,
+    prompt: Option<String>,
+    error_title: Option<String>,
+    error_message: Option<String>,
+    error_style: Option<String>,
+}
+
 /// Pending merge ranges for the current sheet.
 struct PendingMerges {
     ranges: Vec<String>,
@@ -181,6 +198,9 @@ pub struct StreamingXlsxWriter<W: Write + Seek> {
     num_fmts: Vec<(u32, String)>,
     num_fmt_map: HashMap<String, u32>,
     next_num_fmt_id: u32,
+    doc_properties: HashMap<String, String>,
+    custom_properties: Vec<(String, String)>,
+    pending_data_validations: Vec<DataValidationEntry>,
 }
 
 impl<W: Write + Seek> StreamingXlsxWriter<W> {
@@ -294,6 +314,9 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             num_fmts: vec![],
             num_fmt_map: HashMap::new(),
             next_num_fmt_id: 166,
+            doc_properties: HashMap::new(),
+            custom_properties: Vec::new(),
+            pending_data_validations: Vec::new(),
         }
     }
 
@@ -709,6 +732,81 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         Ok(())
     }
 
+    /// Set a core document property.
+    ///
+    /// Valid keys: "title", "subject", "creator", "keywords", "description",
+    /// "last_modified_by", "category".
+    pub fn set_document_property(&mut self, key: &str, value: &str) -> Result<(), XlsxWriteError> {
+        match key {
+            "title" | "subject" | "creator" | "keywords" | "description"
+            | "last_modified_by" | "category" => {
+                self.doc_properties.insert(key.to_string(), value.to_string());
+                Ok(())
+            }
+            _ => Err(XlsxWriteError::InvalidState(format!(
+                "Unknown document property key: '{key}'. Valid keys: title, subject, creator, \
+                 keywords, description, last_modified_by, category."
+            ))),
+        }
+    }
+
+    /// Set a custom document property (arbitrary key-value pair).
+    pub fn set_custom_property(
+        &mut self,
+        name: &str,
+        value: &str,
+    ) -> Result<(), XlsxWriteError> {
+        if name.is_empty() {
+            return Err(XlsxWriteError::InvalidState(
+                "Custom property name cannot be empty.".to_string(),
+            ));
+        }
+        self.custom_properties
+            .push((name.to_string(), value.to_string()));
+        Ok(())
+    }
+
+    /// Add a data validation rule to the current sheet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_data_validation(
+        &mut self,
+        validation_type: &str,
+        sqref: &str,
+        formula1: Option<&str>,
+        formula2: Option<&str>,
+        operator: Option<&str>,
+        allow_blank: bool,
+        show_input_message: bool,
+        show_error_message: bool,
+        prompt_title: Option<&str>,
+        prompt: Option<&str>,
+        error_title: Option<&str>,
+        error_message: Option<&str>,
+        error_style: Option<&str>,
+    ) -> Result<(), XlsxWriteError> {
+        if !self.sheet_open {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        self.pending_data_validations.push(DataValidationEntry {
+            validation_type: validation_type.to_string(),
+            operator: operator.map(|s| s.to_string()),
+            sqref: sqref.to_string(),
+            formula1: formula1.map(|s| s.to_string()),
+            formula2: formula2.map(|s| s.to_string()),
+            allow_blank,
+            show_input_message,
+            show_error_message,
+            prompt_title: prompt_title.map(|s| s.to_string()),
+            prompt: prompt.map(|s| s.to_string()),
+            error_title: error_title.map(|s| s.to_string()),
+            error_message: error_message.map(|s| s.to_string()),
+            error_style: error_style.map(|s| s.to_string()),
+        });
+        Ok(())
+    }
+
     // ---------- Style registry methods ----------
 
     /// Register a custom number format and return its numFmtId.
@@ -882,6 +980,53 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                 write!(self.zip()?, "</mergeCells>")?;
             }
 
+            // Write dataValidations if any
+            let dvs = std::mem::take(&mut self.pending_data_validations);
+            if !dvs.is_empty() {
+                let count = dvs.len();
+                write!(self.zip()?, "<dataValidations count=\"{count}\">")?;
+                for dv in &dvs {
+                    write!(self.zip()?, "<dataValidation type=\"{}\"", xml_escape(&dv.validation_type))?;
+                    if let Some(ref op) = dv.operator {
+                        write!(self.zip()?, " operator=\"{}\"", xml_escape(op))?;
+                    }
+                    write!(self.zip()?, " sqref=\"{}\"", xml_escape(&dv.sqref))?;
+                    if dv.allow_blank {
+                        write!(self.zip()?, " allowBlank=\"1\"")?;
+                    }
+                    if dv.show_input_message {
+                        write!(self.zip()?, " showInputMessage=\"1\"")?;
+                    }
+                    if dv.show_error_message {
+                        write!(self.zip()?, " showErrorMessage=\"1\"")?;
+                    }
+                    if let Some(ref t) = dv.prompt_title {
+                        write!(self.zip()?, " promptTitle=\"{}\"", xml_escape(t))?;
+                    }
+                    if let Some(ref p) = dv.prompt {
+                        write!(self.zip()?, " prompt=\"{}\"", xml_escape(p))?;
+                    }
+                    if let Some(ref t) = dv.error_title {
+                        write!(self.zip()?, " errorTitle=\"{}\"", xml_escape(t))?;
+                    }
+                    if let Some(ref m) = dv.error_message {
+                        write!(self.zip()?, " error=\"{}\"", xml_escape(m))?;
+                    }
+                    if let Some(ref s) = dv.error_style {
+                        write!(self.zip()?, " errorStyle=\"{}\"", xml_escape(s))?;
+                    }
+                    write!(self.zip()?, ">")?;
+                    if let Some(ref f) = dv.formula1 {
+                        write!(self.zip()?, "<formula1>{}</formula1>", xml_escape(f))?;
+                    }
+                    if let Some(ref f) = dv.formula2 {
+                        write!(self.zip()?, "<formula2>{}</formula2>", xml_escape(f))?;
+                    }
+                    write!(self.zip()?, "</dataValidation>")?;
+                }
+                write!(self.zip()?, "</dataValidations>")?;
+            }
+
             write!(self.zip()?, "</worksheet>")?;
             self.sheet_open = false;
         }
@@ -911,6 +1056,10 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         let options =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
+        // Check if we have doc properties (before taking ownership)
+        let has_core = !self.doc_properties.is_empty();
+        let has_custom = !self.custom_properties.is_empty();
+
         // Write [Content_Types].xml
         self.zip()?.start_file("[Content_Types].xml", options)?;
         write!(
@@ -930,6 +1079,20 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                  ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
             )?;
         }
+        if has_core {
+            write!(
+                self.zip()?,
+                "<Override PartName=\"/docProps/core.xml\" \
+                 ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
+            )?;
+        }
+        if has_custom {
+            write!(
+                self.zip()?,
+                "<Override PartName=\"/docProps/custom.xml\" \
+                 ContentType=\"application/vnd.openxmlformats-officedocument.custom-properties+xml\"/>"
+            )?;
+        }
         write!(self.zip()?, "</Types>")?;
 
         // Write _rels/.rels
@@ -938,9 +1101,29 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             self.zip()?,
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
              <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
-             <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>\
-             </Relationships>"
+             <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
         )?;
+        {
+            let mut next_rel_id = 2u32;
+            if has_core {
+                write!(
+                    self.zip()?,
+                    "<Relationship Id=\"rId{next_rel_id}\" \
+                     Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" \
+                     Target=\"docProps/core.xml\"/>"
+                )?;
+                next_rel_id += 1;
+            }
+            if has_custom {
+                write!(
+                    self.zip()?,
+                    "<Relationship Id=\"rId{next_rel_id}\" \
+                     Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties\" \
+                     Target=\"docProps/custom.xml\"/>"
+                )?;
+            }
+        }
+        write!(self.zip()?, "</Relationships>")?;
 
         // Write xl/workbook.xml
         self.zip()?.start_file("xl/workbook.xml", options)?;
@@ -1026,6 +1209,69 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         // Write xl/styles.xml
         self.zip()?.start_file("xl/styles.xml", options)?;
         self.write_styles_xml()?;
+
+        // Write docProps/core.xml if properties are set
+        let doc_props = std::mem::take(&mut self.doc_properties);
+        if !doc_props.is_empty() {
+            self.zip()?.start_file("docProps/core.xml", options)?;
+            write!(
+                self.zip()?,
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+                 <cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" \
+                 xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+                 xmlns:dcterms=\"http://purl.org/dc/terms/\" \
+                 xmlns:dcmitype=\"http://purl.org/dc/dcmitype/\" \
+                 xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
+            )?;
+            for (key, value) in &doc_props {
+                let escaped = xml_escape(value);
+                match key.as_str() {
+                    "title" => write!(self.zip()?, "<dc:title>{escaped}</dc:title>")?,
+                    "subject" => write!(self.zip()?, "<dc:subject>{escaped}</dc:subject>")?,
+                    "creator" => write!(self.zip()?, "<dc:creator>{escaped}</dc:creator>")?,
+                    "keywords" => {
+                        write!(self.zip()?, "<cp:keywords>{escaped}</cp:keywords>")?
+                    }
+                    "description" => {
+                        write!(self.zip()?, "<dc:description>{escaped}</dc:description>")?
+                    }
+                    "last_modified_by" => {
+                        write!(
+                            self.zip()?,
+                            "<cp:lastModifiedBy>{escaped}</cp:lastModifiedBy>"
+                        )?
+                    }
+                    "category" => {
+                        write!(self.zip()?, "<cp:category>{escaped}</cp:category>")?
+                    }
+                    _ => {}
+                }
+            }
+            write!(self.zip()?, "</cp:coreProperties>")?;
+        }
+
+        // Write docProps/custom.xml if custom properties are set
+        let custom_props = std::mem::take(&mut self.custom_properties);
+        if !custom_props.is_empty() {
+            self.zip()?.start_file("docProps/custom.xml", options)?;
+            write!(
+                self.zip()?,
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+                 <Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/custom-properties\" \
+                 xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\">"
+            )?;
+            for (i, (name, value)) in custom_props.iter().enumerate() {
+                let pid = i + 2;
+                let escaped_name = xml_escape(name);
+                let escaped_value = xml_escape(value);
+                write!(
+                    self.zip()?,
+                    "<property fmtid=\"{{D5CDD505-2E9C-101B-9397-08002B2CF9AE}}\" pid=\"{pid}\" \
+                     name=\"{escaped_name}\"><vt:lpwstr>{escaped_value}</vt:lpwstr></property>"
+                )?;
+            }
+            write!(self.zip()?, "</Properties>")?;
+        }
 
         // Take ownership of the ZipWriter to call finish()
         let zip = self.zip.take().unwrap();

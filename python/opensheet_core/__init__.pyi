@@ -9,6 +9,7 @@ from opensheet_core._native import (
     Formula as Formula,
     StyledCell as StyledCell,
     XlsxWriter as XlsxWriter,
+    document_properties as document_properties,
     read_sheet as read_sheet,
     read_xlsx as read_xlsx,
     sheet_names as sheet_names,
