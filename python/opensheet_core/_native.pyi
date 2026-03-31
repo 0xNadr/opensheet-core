@@ -19,6 +19,10 @@ def read_xlsx(path: str) -> list[dict[str, Any]]:
       - ``"freeze_pane"``: tuple of (rows_frozen, cols_frozen) or None
       - ``"auto_filter"``: auto-filter range string (e.g. ``"A1:C1"``) or None
       - ``"state"``: sheet visibility (``"visible"``, ``"hidden"``, or ``"veryHidden"``)
+      - ``"comments"``: list of dicts with ``"cell"``, ``"author"``, ``"text"`` keys
+      - ``"hyperlinks"``: list of dicts with ``"cell"``, ``"url"``, ``"tooltip"`` keys
+      - ``"protection"``: dict of protection settings or None
+      - ``"tables"``: list of table definition dicts
     """
     ...
 
@@ -151,6 +155,43 @@ class XlsxWriter:
             formula2: Second formula/value (for between/notBetween operators).
             operator: Comparison operator (e.g. ``"between"``, ``"greaterThan"``).
         """
+        ...
+    def add_comment(self, cell_ref: str, author: str, text: str) -> None:
+        """Add a comment to a cell in the current sheet."""
+        ...
+    def add_hyperlink(self, cell_ref: str, url: str, tooltip: str | None = None) -> None:
+        """Add a hyperlink to a cell in the current sheet."""
+        ...
+    def protect_sheet(
+        self,
+        password: str | None = None,
+        sheet: bool = True,
+        objects: bool = True,
+        scenarios: bool = True,
+        format_cells: bool = False,
+        format_columns: bool = False,
+        format_rows: bool = False,
+        insert_columns: bool = False,
+        insert_rows: bool = False,
+        insert_hyperlinks: bool = False,
+        delete_columns: bool = False,
+        delete_rows: bool = False,
+        sort: bool = False,
+        auto_filter: bool = False,
+        pivot_tables: bool = False,
+        select_locked_cells: bool = False,
+        select_unlocked_cells: bool = False,
+    ) -> None:
+        """Protect the current sheet with optional password and configurable options."""
+        ...
+    def add_table(
+        self,
+        reference: str,
+        columns: list[str],
+        name: str | None = None,
+        style: str | None = None,
+    ) -> None:
+        """Add a structured table to the current sheet."""
         ...
     def freeze_panes(self, row: int = 0, col: int = 0) -> None:
         """Freeze the top ``row`` rows and left ``col`` columns.

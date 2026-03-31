@@ -129,6 +129,62 @@ pub struct DataValidation {
     pub error_style: Option<String>,
 }
 
+/// A comment on a cell.
+#[derive(Debug, Clone)]
+pub struct Comment {
+    pub cell: String,
+    pub author: String,
+    pub text: String,
+}
+
+/// A hyperlink on a cell.
+#[derive(Debug, Clone)]
+pub struct Hyperlink {
+    pub cell: String,
+    pub url: String,
+    pub tooltip: Option<String>,
+}
+
+/// Sheet protection settings.
+#[derive(Debug, Clone)]
+pub struct SheetProtection {
+    pub sheet: bool,
+    pub objects: bool,
+    pub scenarios: bool,
+    pub password_hash: Option<String>,
+    pub format_cells: bool,
+    pub format_columns: bool,
+    pub format_rows: bool,
+    pub insert_columns: bool,
+    pub insert_rows: bool,
+    pub insert_hyperlinks: bool,
+    pub delete_columns: bool,
+    pub delete_rows: bool,
+    pub sort: bool,
+    pub auto_filter: bool,
+    pub pivot_tables: bool,
+    pub select_locked_cells: bool,
+    pub select_unlocked_cells: bool,
+}
+
+/// A column in a structured table.
+#[derive(Debug, Clone)]
+pub struct TableColumn {
+    pub id: u32,
+    pub name: String,
+}
+
+/// A structured table definition.
+#[derive(Debug, Clone)]
+pub struct TableDef {
+    pub name: String,
+    pub display_name: String,
+    pub reference: String,
+    pub columns: Vec<TableColumn>,
+    pub style: Option<String>,
+    pub has_auto_filter: bool,
+}
+
 /// Read an XLSX file and return all sheets plus the shared string table.
 ///
 /// Cells referencing shared strings are stored as `CellValue::SharedString(index)`
@@ -155,6 +211,19 @@ pub fn read_xlsx<R: Read + Seek>(
     let mut sheets = Vec::with_capacity(sheet_infos.len());
     for info in &sheet_infos {
         let data = parse_worksheet(&mut archive, &info.path, &shared_strings, &styles)?;
+
+        // Parse sheet relationships (for comments and hyperlink URLs)
+        let sheet_rels = parse_sheet_rels(&mut archive, &info.path)?;
+
+        // Parse comments from the comments file referenced in sheet rels
+        let comments = parse_comments_for_sheet(&mut archive, &sheet_rels)?;
+
+        // Resolve hyperlinks: combine sheet XML hyperlinks with rels for external URLs
+        let hyperlinks = resolve_hyperlinks(&data.hyperlink_refs, &sheet_rels);
+
+        // Parse tables referenced in sheet rels
+        let tables = parse_tables_for_sheet(&mut archive, &sheet_rels)?;
+
         sheets.push(Sheet {
             name: info.name.clone(),
             rows: data.rows,
@@ -165,6 +234,10 @@ pub fn read_xlsx<R: Read + Seek>(
             auto_filter: data.auto_filter,
             state: info.state.clone(),
             data_validations: data.data_validations,
+            comments,
+            hyperlinks,
+            protection: data.protection,
+            tables,
         });
     }
 
@@ -205,6 +278,12 @@ pub fn read_single_sheet<R: Read + Seek>(
     };
 
     let data = parse_worksheet(&mut archive, &info.path, &shared_strings, &styles)?;
+
+    let sheet_rels = parse_sheet_rels(&mut archive, &info.path)?;
+    let comments = parse_comments_for_sheet(&mut archive, &sheet_rels)?;
+    let hyperlinks = resolve_hyperlinks(&data.hyperlink_refs, &sheet_rels);
+    let tables = parse_tables_for_sheet(&mut archive, &sheet_rels)?;
+
     let sheet = Sheet {
         name: info.name.clone(),
         rows: data.rows,
@@ -215,6 +294,10 @@ pub fn read_single_sheet<R: Read + Seek>(
         auto_filter: data.auto_filter,
         state: info.state.clone(),
         data_validations: data.data_validations,
+        comments,
+        hyperlinks,
+        protection: data.protection,
+        tables,
     };
 
     Ok((sheet, shared_strings))
@@ -1234,7 +1317,15 @@ fn parse_f64_from_bytes(bytes: &[u8]) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Parsed worksheet data: rows, merge ranges, column widths, row heights, freeze pane, auto-filter, and data validations.
+/// A raw hyperlink reference parsed from the sheet XML (before resolving via rels).
+struct HyperlinkRef {
+    cell: String,
+    r_id: Option<String>,
+    location: Option<String>,
+    tooltip: Option<String>,
+}
+
+/// Parsed worksheet data: rows, merge ranges, column widths, row heights, freeze pane, auto-filter, data validations, hyperlinks, and protection.
 struct WorksheetData {
     rows: Vec<Vec<CellValue>>,
     merges: Vec<String>,
@@ -1243,6 +1334,8 @@ struct WorksheetData {
     freeze_pane: Option<(u32, u32)>,
     auto_filter: Option<String>,
     data_validations: Vec<DataValidation>,
+    hyperlink_refs: Vec<HyperlinkRef>,
+    protection: Option<SheetProtection>,
 }
 
 /// Parse a single worksheet XML file and return rows of cell values and merge ranges.
@@ -1321,6 +1414,9 @@ fn parse_worksheet<R: Read + Seek>(
     let mut in_dv_formula1 = false;
     let mut in_dv_formula2 = false;
     let mut dv_formula_text = String::new();
+    let mut hyperlink_refs: Vec<HyperlinkRef> = Vec::new();
+    let mut in_hyperlinks = false;
+    let mut protection: Option<SheetProtection> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -1462,6 +1558,46 @@ fn parse_worksheet<R: Read + Seek>(
                     b"formula2" if in_data_validation => {
                         in_dv_formula2 = true;
                         dv_formula_text.clear();
+                    }
+                    b"hyperlinks" => {
+                        in_hyperlinks = true;
+                    }
+                    b"hyperlink" if in_hyperlinks => {
+                        let mut cell = String::new();
+                        let mut r_id: Option<String> = None;
+                        let mut location: Option<String> = None;
+                        let mut tooltip: Option<String> = None;
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"ref" => {
+                                    cell = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                b"location" => {
+                                    location =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                b"tooltip" => {
+                                    tooltip =
+                                        Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                                _ => {
+                                    // Check for r:id (namespace-qualified)
+                                    let key_bytes = attr.key.as_ref();
+                                    if key_bytes == b"r:id" || key_bytes.ends_with(b":id") {
+                                        r_id =
+                                            Some(String::from_utf8_lossy(&attr.value).to_string());
+                                    }
+                                }
+                            }
+                        }
+                        if !cell.is_empty() {
+                            hyperlink_refs.push(HyperlinkRef {
+                                cell,
+                                r_id,
+                                location,
+                                tooltip,
+                            });
+                        }
                     }
                     b"row" => {
                         // Get row number and optional custom height from attributes
@@ -1636,6 +1772,9 @@ fn parse_worksheet<R: Read + Seek>(
                     b"mergeCells" => {
                         in_merge_cells = false;
                     }
+                    b"hyperlinks" => {
+                        in_hyperlinks = false;
+                    }
                     b"dataValidation" => {
                         if let Some(mut dv) = current_dv.take() {
                             if in_dv_formula1 {
@@ -1663,6 +1802,90 @@ fn parse_worksheet<R: Read + Seek>(
                         in_dv_formula2 = false;
                     }
                     _ => {}
+                }
+            }
+            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"sheetProtection" => {
+                let mut prot = SheetProtection {
+                    sheet: false,
+                    objects: false,
+                    scenarios: false,
+                    password_hash: None,
+                    format_cells: false,
+                    format_columns: false,
+                    format_rows: false,
+                    insert_columns: false,
+                    insert_rows: false,
+                    insert_hyperlinks: false,
+                    delete_columns: false,
+                    delete_rows: false,
+                    sort: false,
+                    auto_filter: false,
+                    pivot_tables: false,
+                    select_locked_cells: false,
+                    select_unlocked_cells: false,
+                };
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"sheet" => prot.sheet = attr.value.as_ref() == b"1",
+                        b"objects" => prot.objects = attr.value.as_ref() == b"1",
+                        b"scenarios" => prot.scenarios = attr.value.as_ref() == b"1",
+                        b"password" => {
+                            prot.password_hash =
+                                Some(String::from_utf8_lossy(&attr.value).to_string())
+                        }
+                        b"formatCells" => prot.format_cells = attr.value.as_ref() == b"1",
+                        b"formatColumns" => prot.format_columns = attr.value.as_ref() == b"1",
+                        b"formatRows" => prot.format_rows = attr.value.as_ref() == b"1",
+                        b"insertColumns" => prot.insert_columns = attr.value.as_ref() == b"1",
+                        b"insertRows" => prot.insert_rows = attr.value.as_ref() == b"1",
+                        b"insertHyperlinks" => prot.insert_hyperlinks = attr.value.as_ref() == b"1",
+                        b"deleteColumns" => prot.delete_columns = attr.value.as_ref() == b"1",
+                        b"deleteRows" => prot.delete_rows = attr.value.as_ref() == b"1",
+                        b"sort" => prot.sort = attr.value.as_ref() == b"1",
+                        b"autoFilter" => prot.auto_filter = attr.value.as_ref() == b"1",
+                        b"pivotTables" => prot.pivot_tables = attr.value.as_ref() == b"1",
+                        b"selectLockedCells" => {
+                            prot.select_locked_cells = attr.value.as_ref() == b"1"
+                        }
+                        b"selectUnlockedCells" => {
+                            prot.select_unlocked_cells = attr.value.as_ref() == b"1"
+                        }
+                        _ => {}
+                    }
+                }
+                protection = Some(prot);
+            }
+            Ok(Event::Empty(ref e)) if in_hyperlinks && e.name().as_ref() == b"hyperlink" => {
+                let mut cell = String::new();
+                let mut r_id: Option<String> = None;
+                let mut location: Option<String> = None;
+                let mut tooltip: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"ref" => {
+                            cell = String::from_utf8_lossy(&attr.value).to_string();
+                        }
+                        b"location" => {
+                            location = Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                        b"tooltip" => {
+                            tooltip = Some(String::from_utf8_lossy(&attr.value).to_string());
+                        }
+                        _ => {
+                            let key_bytes = attr.key.as_ref();
+                            if key_bytes == b"r:id" || key_bytes.ends_with(b":id") {
+                                r_id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                            }
+                        }
+                    }
+                }
+                if !cell.is_empty() {
+                    hyperlink_refs.push(HyperlinkRef {
+                        cell,
+                        r_id,
+                        location,
+                        tooltip,
+                    });
                 }
             }
             Ok(Event::Empty(ref e)) if e.name().as_ref() == b"autoFilter" => {
@@ -1756,7 +1979,332 @@ fn parse_worksheet<R: Read + Seek>(
         freeze_pane,
         auto_filter,
         data_validations,
+        hyperlink_refs,
+        protection,
     })
+}
+
+/// Relationship entry from a sheet .rels file.
+struct SheetRel {
+    id: String,
+    target: String,
+    rel_type: String,
+}
+
+/// Parse the .rels file for a given sheet path.
+/// E.g., for "xl/worksheets/sheet1.xml", look up "xl/worksheets/_rels/sheet1.xml.rels".
+fn parse_sheet_rels<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    sheet_path: &str,
+) -> Result<Vec<SheetRel>, XlsxError> {
+    // Construct rels path: insert _rels/ before filename and append .rels
+    let rels_path = if let Some(slash_pos) = sheet_path.rfind('/') {
+        let dir = &sheet_path[..=slash_pos];
+        let file = &sheet_path[slash_pos + 1..];
+        format!("{dir}_rels/{file}.rels")
+    } else {
+        format!("_rels/{sheet_path}.rels")
+    };
+
+    let file = match archive.by_name(&rels_path) {
+        Ok(f) => f,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut reader = Reader::from_reader(BufReader::new(file));
+    let mut buf = Vec::new();
+    let mut rels = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.name().as_ref() == b"Relationship" =>
+            {
+                let mut id = String::new();
+                let mut target = String::new();
+                let mut rel_type = String::new();
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"Id" => id = String::from_utf8_lossy(&attr.value).to_string(),
+                        b"Target" => target = String::from_utf8_lossy(&attr.value).to_string(),
+                        b"Type" => rel_type = String::from_utf8_lossy(&attr.value).to_string(),
+                        _ => {}
+                    }
+                }
+                if !id.is_empty() {
+                    rels.push(SheetRel {
+                        id,
+                        target,
+                        rel_type,
+                    });
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(rels)
+}
+
+/// Parse comments XML for a sheet given the sheet's relationships.
+fn parse_comments_for_sheet<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    sheet_rels: &[SheetRel],
+) -> Result<Vec<Comment>, XlsxError> {
+    // Find the comments relationship
+    let comments_rel = sheet_rels
+        .iter()
+        .find(|r| r.rel_type.ends_with("/comments"));
+    let comments_target = match comments_rel {
+        Some(r) => &r.target,
+        None => return Ok(Vec::new()),
+    };
+
+    // Resolve the path (relative to xl/worksheets/)
+    let comments_path = if comments_target.starts_with('/') {
+        comments_target[1..].to_string()
+    } else if comments_target.starts_with("../") {
+        format!("xl/{}", &comments_target[3..])
+    } else {
+        format!("xl/worksheets/{comments_target}")
+    };
+
+    let file = match archive.by_name(&comments_path) {
+        Ok(f) => f,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut reader = Reader::from_reader(BufReader::new(file));
+    let mut buf = Vec::new();
+    let mut authors: Vec<String> = Vec::new();
+    let mut comments: Vec<Comment> = Vec::new();
+    let mut in_authors = false;
+    let mut in_author = false;
+    let mut in_comment = false;
+    let mut in_text = false;
+    let mut in_t = false;
+    let mut current_author_text = String::new();
+    let mut current_cell = String::new();
+    let mut current_author_id: usize = 0;
+    let mut current_comment_text = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => match e.name().as_ref() {
+                b"authors" => in_authors = true,
+                b"author" if in_authors => {
+                    in_author = true;
+                    current_author_text.clear();
+                }
+                b"comment" => {
+                    in_comment = true;
+                    current_cell.clear();
+                    current_author_id = 0;
+                    current_comment_text.clear();
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"ref" => {
+                                current_cell = String::from_utf8_lossy(&attr.value).to_string();
+                            }
+                            b"authorId" => {
+                                current_author_id = parse_usize_from_bytes(&attr.value);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                b"text" if in_comment => {
+                    in_text = true;
+                }
+                b"t" if in_text => {
+                    in_t = true;
+                }
+                _ => {}
+            },
+            Ok(Event::Text(ref e)) => {
+                if in_author {
+                    if let Ok(text) = e.unescape() {
+                        current_author_text.push_str(&text);
+                    }
+                } else if in_t {
+                    if let Ok(text) = e.unescape() {
+                        current_comment_text.push_str(&text);
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => match e.name().as_ref() {
+                b"authors" => in_authors = false,
+                b"author" if in_author => {
+                    in_author = false;
+                    authors.push(std::mem::take(&mut current_author_text));
+                }
+                b"comment" => {
+                    if in_comment && !current_cell.is_empty() {
+                        let author = authors.get(current_author_id).cloned().unwrap_or_default();
+                        comments.push(Comment {
+                            cell: std::mem::take(&mut current_cell),
+                            author,
+                            text: std::mem::take(&mut current_comment_text),
+                        });
+                    }
+                    in_comment = false;
+                    in_text = false;
+                    in_t = false;
+                }
+                b"text" => {
+                    in_text = false;
+                    in_t = false;
+                }
+                b"t" if in_text => {
+                    in_t = false;
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(comments)
+}
+
+/// Resolve hyperlink references using sheet relationships to produce final Hyperlink structs.
+fn resolve_hyperlinks(refs: &[HyperlinkRef], sheet_rels: &[SheetRel]) -> Vec<Hyperlink> {
+    let mut hyperlinks = Vec::with_capacity(refs.len());
+    for href in refs {
+        let url = if let Some(ref r_id) = href.r_id {
+            // External URL — look up in rels
+            sheet_rels
+                .iter()
+                .find(|r| r.id == *r_id)
+                .map(|r| r.target.clone())
+                .unwrap_or_default()
+        } else if let Some(ref loc) = href.location {
+            // Internal location (e.g. "Sheet2!A1")
+            loc.clone()
+        } else {
+            continue;
+        };
+        if !url.is_empty() {
+            hyperlinks.push(Hyperlink {
+                cell: href.cell.clone(),
+                url,
+                tooltip: href.tooltip.clone(),
+            });
+        }
+    }
+    hyperlinks
+}
+
+/// Parse tables referenced in a sheet's relationships.
+fn parse_tables_for_sheet<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    sheet_rels: &[SheetRel],
+) -> Result<Vec<TableDef>, XlsxError> {
+    let table_rels: Vec<_> = sheet_rels
+        .iter()
+        .filter(|r| r.rel_type.ends_with("/table"))
+        .collect();
+
+    if table_rels.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut tables = Vec::new();
+    for rel in table_rels {
+        let table_path = if rel.target.starts_with('/') {
+            rel.target[1..].to_string()
+        } else if rel.target.starts_with("../") {
+            format!("xl/{}", &rel.target[3..])
+        } else {
+            format!("xl/worksheets/{}", &rel.target)
+        };
+
+        let file = match archive.by_name(&table_path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        let mut reader = Reader::from_reader(BufReader::new(file));
+        let mut buf = Vec::new();
+        let mut table = TableDef {
+            name: String::new(),
+            display_name: String::new(),
+            reference: String::new(),
+            columns: Vec::new(),
+            style: None,
+            has_auto_filter: false,
+        };
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                    b"table" => {
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"name" => {
+                                    table.name = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                b"displayName" => {
+                                    table.display_name =
+                                        String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                b"ref" => {
+                                    table.reference =
+                                        String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    b"autoFilter" => {
+                        table.has_auto_filter = true;
+                    }
+                    b"tableColumn" => {
+                        let mut col_id: u32 = 0;
+                        let mut col_name = String::new();
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"id" => col_id = parse_u32_from_bytes(&attr.value),
+                                b"name" => {
+                                    col_name = String::from_utf8_lossy(&attr.value).to_string()
+                                }
+                                _ => {}
+                            }
+                        }
+                        table.columns.push(TableColumn {
+                            id: col_id,
+                            name: col_name,
+                        });
+                    }
+                    b"tableStyleInfo" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"name" {
+                                table.style =
+                                    Some(String::from_utf8_lossy(&attr.value).to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(XlsxError::Xml(e)),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        if !table.reference.is_empty() {
+            tables.push(table);
+        }
+    }
+
+    Ok(tables)
 }
 
 /// Convert raw cell value text into a typed CellValue based on the cell type attribute.

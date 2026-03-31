@@ -114,6 +114,14 @@ pub struct Sheet {
     pub state: std::string::String,
     /// Data validation rules applied to cell ranges.
     pub data_validations: Vec<crate::reader::xlsx::DataValidation>,
+    /// Comments on cells.
+    pub comments: Vec<crate::reader::xlsx::Comment>,
+    /// Hyperlinks on cells.
+    pub hyperlinks: Vec<crate::reader::xlsx::Hyperlink>,
+    /// Sheet protection settings, or None if unprotected.
+    pub protection: Option<crate::reader::xlsx::SheetProtection>,
+    /// Structured table definitions.
+    pub tables: Vec<crate::reader::xlsx::TableDef>,
 }
 
 /// Convert an Excel serial number to (year, month, day, hour, minute, second, microsecond).

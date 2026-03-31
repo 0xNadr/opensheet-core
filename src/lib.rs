@@ -499,6 +499,86 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
         }
         dict.set_item("data_validations", dv_list)?;
 
+        // Comments
+        let comments_list = PyList::empty(py);
+        for c in &sheet.comments {
+            let c_dict = PyDict::new(py);
+            c_dict.set_item("cell", &c.cell)?;
+            c_dict.set_item("author", &c.author)?;
+            c_dict.set_item("text", &c.text)?;
+            comments_list.append(c_dict)?;
+        }
+        dict.set_item("comments", comments_list)?;
+
+        // Hyperlinks
+        let hyperlinks_list = PyList::empty(py);
+        for h in &sheet.hyperlinks {
+            let h_dict = PyDict::new(py);
+            h_dict.set_item("cell", &h.cell)?;
+            h_dict.set_item("url", &h.url)?;
+            match &h.tooltip {
+                Some(t) => h_dict.set_item("tooltip", t)?,
+                None => h_dict.set_item("tooltip", py.None())?,
+            }
+            hyperlinks_list.append(h_dict)?;
+        }
+        dict.set_item("hyperlinks", hyperlinks_list)?;
+
+        // Protection
+        match &sheet.protection {
+            Some(prot) => {
+                let p_dict = PyDict::new(py);
+                p_dict.set_item("sheet", prot.sheet)?;
+                p_dict.set_item("objects", prot.objects)?;
+                p_dict.set_item("scenarios", prot.scenarios)?;
+                match &prot.password_hash {
+                    Some(h) => p_dict.set_item("password_hash", h)?,
+                    None => p_dict.set_item("password_hash", py.None())?,
+                }
+                p_dict.set_item("format_cells", prot.format_cells)?;
+                p_dict.set_item("format_columns", prot.format_columns)?;
+                p_dict.set_item("format_rows", prot.format_rows)?;
+                p_dict.set_item("insert_columns", prot.insert_columns)?;
+                p_dict.set_item("insert_rows", prot.insert_rows)?;
+                p_dict.set_item("insert_hyperlinks", prot.insert_hyperlinks)?;
+                p_dict.set_item("delete_columns", prot.delete_columns)?;
+                p_dict.set_item("delete_rows", prot.delete_rows)?;
+                p_dict.set_item("sort", prot.sort)?;
+                p_dict.set_item("auto_filter", prot.auto_filter)?;
+                p_dict.set_item("pivot_tables", prot.pivot_tables)?;
+                p_dict.set_item("select_locked_cells", prot.select_locked_cells)?;
+                p_dict.set_item("select_unlocked_cells", prot.select_unlocked_cells)?;
+                dict.set_item("protection", p_dict)?;
+            }
+            None => {
+                dict.set_item("protection", py.None())?;
+            }
+        }
+
+        // Tables
+        let tables_list = PyList::empty(py);
+        for t in &sheet.tables {
+            let t_dict = PyDict::new(py);
+            t_dict.set_item("name", &t.name)?;
+            t_dict.set_item("display_name", &t.display_name)?;
+            t_dict.set_item("ref", &t.reference)?;
+            let cols_list = PyList::empty(py);
+            for col in &t.columns {
+                let col_dict = PyDict::new(py);
+                col_dict.set_item("id", col.id)?;
+                col_dict.set_item("name", &col.name)?;
+                cols_list.append(col_dict)?;
+            }
+            t_dict.set_item("columns", cols_list)?;
+            match &t.style {
+                Some(s) => t_dict.set_item("style", s)?,
+                None => t_dict.set_item("style", py.None())?,
+            }
+            t_dict.set_item("has_auto_filter", t.has_auto_filter)?;
+            tables_list.append(t_dict)?;
+        }
+        dict.set_item("tables", tables_list)?;
+
         result.append(dict)?;
     }
 
@@ -1092,6 +1172,111 @@ impl XlsxWriter {
             error_message,
             error_style,
         )?;
+        Ok(())
+    }
+
+    /// Add a comment to a cell in the current sheet.
+    fn add_comment(&mut self, cell_ref: &str, author: &str, text: &str) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.add_comment(cell_ref, author, text)?;
+        Ok(())
+    }
+
+    /// Add a hyperlink to a cell in the current sheet.
+    #[pyo3(signature = (cell_ref, url, tooltip=None))]
+    fn add_hyperlink(&mut self, cell_ref: &str, url: &str, tooltip: Option<&str>) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.add_hyperlink(cell_ref, url, tooltip)?;
+        Ok(())
+    }
+
+    /// Protect the current sheet with optional password and configurable options.
+    #[pyo3(signature = (
+        password=None,
+        sheet=true,
+        objects=true,
+        scenarios=true,
+        format_cells=false,
+        format_columns=false,
+        format_rows=false,
+        insert_columns=false,
+        insert_rows=false,
+        insert_hyperlinks=false,
+        delete_columns=false,
+        delete_rows=false,
+        sort=false,
+        auto_filter=false,
+        pivot_tables=false,
+        select_locked_cells=false,
+        select_unlocked_cells=false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn protect_sheet(
+        &mut self,
+        password: Option<&str>,
+        sheet: bool,
+        objects: bool,
+        scenarios: bool,
+        format_cells: bool,
+        format_columns: bool,
+        format_rows: bool,
+        insert_columns: bool,
+        insert_rows: bool,
+        insert_hyperlinks: bool,
+        delete_columns: bool,
+        delete_rows: bool,
+        sort: bool,
+        auto_filter: bool,
+        pivot_tables: bool,
+        select_locked_cells: bool,
+        select_unlocked_cells: bool,
+    ) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.protect_sheet(
+            password,
+            sheet,
+            objects,
+            scenarios,
+            format_cells,
+            format_columns,
+            format_rows,
+            insert_columns,
+            insert_rows,
+            insert_hyperlinks,
+            delete_columns,
+            delete_rows,
+            sort,
+            auto_filter,
+            pivot_tables,
+            select_locked_cells,
+            select_unlocked_cells,
+        )?;
+        Ok(())
+    }
+
+    /// Add a structured table to the current sheet.
+    #[pyo3(signature = (reference, columns, name=None, style=None))]
+    fn add_table(
+        &mut self,
+        reference: &str,
+        columns: Vec<String>,
+        name: Option<&str>,
+        style: Option<&str>,
+    ) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.add_table(reference, &columns, name, style)?;
         Ok(())
     }
 

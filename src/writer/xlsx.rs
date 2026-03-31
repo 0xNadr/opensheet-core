@@ -146,6 +146,55 @@ struct DefinedNameEntry {
     sheet_index: Option<usize>,
 }
 
+/// A comment entry for the writer.
+struct CommentEntry {
+    cell: String,
+    author: String,
+    text: String,
+}
+
+/// A hyperlink entry for the writer.
+struct HyperlinkEntry {
+    cell: String,
+    url: String,
+    tooltip: Option<String>,
+}
+
+/// Sheet protection entry for the writer.
+struct ProtectionEntry {
+    password_hash: Option<String>,
+    sheet: bool,
+    objects: bool,
+    scenarios: bool,
+    format_cells: bool,
+    format_columns: bool,
+    format_rows: bool,
+    insert_columns: bool,
+    insert_rows: bool,
+    insert_hyperlinks: bool,
+    delete_columns: bool,
+    delete_rows: bool,
+    sort: bool,
+    auto_filter: bool,
+    pivot_tables: bool,
+    select_locked_cells: bool,
+    select_unlocked_cells: bool,
+}
+
+/// A table column entry for the writer.
+struct TableColumnEntry {
+    name: String,
+}
+
+/// A structured table entry for the writer.
+struct TableEntry {
+    reference: String,
+    columns: Vec<TableColumnEntry>,
+    name: Option<String>,
+    style: Option<String>,
+    sheet_index: usize,
+}
+
 /// A data validation entry for the writer.
 struct DataValidationEntry {
     validation_type: String,
@@ -201,6 +250,13 @@ pub struct StreamingXlsxWriter<W: Write + Seek> {
     doc_properties: HashMap<String, String>,
     custom_properties: Vec<(String, String)>,
     pending_data_validations: Vec<DataValidationEntry>,
+    pending_comments: Vec<CommentEntry>,
+    pending_hyperlinks: Vec<HyperlinkEntry>,
+    pending_protection: Option<ProtectionEntry>,
+    tables: Vec<TableEntry>,
+    /// Track per-sheet comment/hyperlink/table data for finalize
+    sheet_comments: Vec<Vec<CommentEntry>>,
+    sheet_hyperlinks: Vec<Vec<HyperlinkEntry>>,
 }
 
 impl<W: Write + Seek> StreamingXlsxWriter<W> {
@@ -317,6 +373,12 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
             doc_properties: HashMap::new(),
             custom_properties: Vec::new(),
             pending_data_validations: Vec::new(),
+            pending_comments: Vec::new(),
+            pending_hyperlinks: Vec::new(),
+            pending_protection: None,
+            tables: Vec::new(),
+            sheet_comments: Vec::new(),
+            sheet_hyperlinks: Vec::new(),
         }
     }
 
@@ -804,6 +866,123 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         Ok(())
     }
 
+    /// Add a comment to a cell in the current sheet.
+    pub fn add_comment(
+        &mut self,
+        cell_ref: &str,
+        author: &str,
+        text: &str,
+    ) -> Result<(), XlsxWriteError> {
+        if !self.sheet_open {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        self.pending_comments.push(CommentEntry {
+            cell: cell_ref.to_string(),
+            author: author.to_string(),
+            text: text.to_string(),
+        });
+        Ok(())
+    }
+
+    /// Add a hyperlink to a cell in the current sheet.
+    pub fn add_hyperlink(
+        &mut self,
+        cell_ref: &str,
+        url: &str,
+        tooltip: Option<&str>,
+    ) -> Result<(), XlsxWriteError> {
+        if !self.sheet_open {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        self.pending_hyperlinks.push(HyperlinkEntry {
+            cell: cell_ref.to_string(),
+            url: url.to_string(),
+            tooltip: tooltip.map(|s| s.to_string()),
+        });
+        Ok(())
+    }
+
+    /// Protect the current sheet with optional password and configurable options.
+    #[allow(clippy::too_many_arguments)]
+    pub fn protect_sheet(
+        &mut self,
+        password: Option<&str>,
+        sheet: bool,
+        objects: bool,
+        scenarios: bool,
+        format_cells: bool,
+        format_columns: bool,
+        format_rows: bool,
+        insert_columns: bool,
+        insert_rows: bool,
+        insert_hyperlinks: bool,
+        delete_columns: bool,
+        delete_rows: bool,
+        sort: bool,
+        auto_filter: bool,
+        pivot_tables: bool,
+        select_locked_cells: bool,
+        select_unlocked_cells: bool,
+    ) -> Result<(), XlsxWriteError> {
+        if !self.sheet_open {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        let password_hash = password.map(hash_password);
+        self.pending_protection = Some(ProtectionEntry {
+            password_hash,
+            sheet,
+            objects,
+            scenarios,
+            format_cells,
+            format_columns,
+            format_rows,
+            insert_columns,
+            insert_rows,
+            insert_hyperlinks,
+            delete_columns,
+            delete_rows,
+            sort,
+            auto_filter,
+            pivot_tables,
+            select_locked_cells,
+            select_unlocked_cells,
+        });
+        Ok(())
+    }
+
+    /// Add a structured table to the current sheet.
+    pub fn add_table(
+        &mut self,
+        reference: &str,
+        columns: &[String],
+        name: Option<&str>,
+        style: Option<&str>,
+    ) -> Result<(), XlsxWriteError> {
+        if self.sheets.is_empty() {
+            return Err(XlsxWriteError::InvalidState(
+                "No sheet is open. Call add_sheet() first.".to_string(),
+            ));
+        }
+        let sheet_index = self.sheets.len(); // 1-based sheet index
+        self.tables.push(TableEntry {
+            reference: reference.to_string(),
+            columns: columns
+                .iter()
+                .map(|c| TableColumnEntry { name: c.clone() })
+                .collect(),
+            name: name.map(|s| s.to_string()),
+            style: style.map(|s| s.to_string()),
+            sheet_index,
+        });
+        Ok(())
+    }
+
     // ---------- Style registry methods ----------
 
     /// Register a custom number format and return its numFmtId.
@@ -977,6 +1156,63 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                 write!(self.zip()?, "</mergeCells>")?;
             }
 
+            // Write sheetProtection if set
+            if let Some(prot) = self.pending_protection.take() {
+                write!(self.zip()?, "<sheetProtection")?;
+                if let Some(ref hash) = prot.password_hash {
+                    write!(self.zip()?, " password=\"{hash}\"")?;
+                }
+                if prot.sheet {
+                    write!(self.zip()?, " sheet=\"1\"")?;
+                }
+                if prot.objects {
+                    write!(self.zip()?, " objects=\"1\"")?;
+                }
+                if prot.scenarios {
+                    write!(self.zip()?, " scenarios=\"1\"")?;
+                }
+                if prot.format_cells {
+                    write!(self.zip()?, " formatCells=\"1\"")?;
+                }
+                if prot.format_columns {
+                    write!(self.zip()?, " formatColumns=\"1\"")?;
+                }
+                if prot.format_rows {
+                    write!(self.zip()?, " formatRows=\"1\"")?;
+                }
+                if prot.insert_columns {
+                    write!(self.zip()?, " insertColumns=\"1\"")?;
+                }
+                if prot.insert_rows {
+                    write!(self.zip()?, " insertRows=\"1\"")?;
+                }
+                if prot.insert_hyperlinks {
+                    write!(self.zip()?, " insertHyperlinks=\"1\"")?;
+                }
+                if prot.delete_columns {
+                    write!(self.zip()?, " deleteColumns=\"1\"")?;
+                }
+                if prot.delete_rows {
+                    write!(self.zip()?, " deleteRows=\"1\"")?;
+                }
+                if prot.sort {
+                    write!(self.zip()?, " sort=\"1\"")?;
+                }
+                if prot.auto_filter {
+                    write!(self.zip()?, " autoFilter=\"1\"")?;
+                }
+                if prot.pivot_tables {
+                    write!(self.zip()?, " pivotTables=\"1\"")?;
+                }
+                if prot.select_locked_cells {
+                    write!(self.zip()?, " selectLockedCells=\"1\"")?;
+                }
+                if prot.select_unlocked_cells {
+                    write!(self.zip()?, " selectUnlockedCells=\"1\"")?;
+                }
+                write!(self.zip()?, "/>")?;
+            }
+
             // Write dataValidations if any
             let dvs = std::mem::take(&mut self.pending_data_validations);
             if !dvs.is_empty() {
@@ -1028,6 +1264,32 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                 write!(self.zip()?, "</dataValidations>")?;
             }
 
+            // Write hyperlinks if any
+            let hyperlinks = std::mem::take(&mut self.pending_hyperlinks);
+            if !hyperlinks.is_empty() {
+                write!(self.zip()?, "<hyperlinks>")?;
+                for (i, hl) in hyperlinks.iter().enumerate() {
+                    let r_id = format!("rHl{}", i + 1);
+                    let escaped_cell = xml_escape(&hl.cell);
+                    write!(
+                        self.zip()?,
+                        "<hyperlink ref=\"{escaped_cell}\" r:id=\"{r_id}\""
+                    )?;
+                    if let Some(ref tip) = hl.tooltip {
+                        write!(self.zip()?, " tooltip=\"{}\"", xml_escape(tip))?;
+                    }
+                    write!(self.zip()?, "/>")?;
+                }
+                write!(self.zip()?, "</hyperlinks>")?;
+                self.sheet_hyperlinks.push(hyperlinks);
+            } else {
+                self.sheet_hyperlinks.push(Vec::new());
+            }
+
+            // Save comments for finalize
+            let comments = std::mem::take(&mut self.pending_comments);
+            self.sheet_comments.push(comments);
+
             write!(self.zip()?, "</worksheet>")?;
             self.sheet_open = false;
         }
@@ -1061,6 +1323,152 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
         let has_core = !self.doc_properties.is_empty();
         let has_custom = !self.custom_properties.is_empty();
 
+        // Determine which sheets have comments
+        let sheet_comments = std::mem::take(&mut self.sheet_comments);
+        let sheet_hyperlinks = std::mem::take(&mut self.sheet_hyperlinks);
+        let tables = std::mem::take(&mut self.tables);
+
+        // Write comment XML files (xl/comments{N}.xml)
+        for (i, comments) in sheet_comments.iter().enumerate() {
+            if comments.is_empty() {
+                continue;
+            }
+            let comment_num = i + 1;
+            let path = format!("xl/comments{comment_num}.xml");
+            self.zip()?.start_file(path, options)?;
+            write!(
+                self.zip()?,
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+                 <comments xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+            )?;
+            // Collect unique authors
+            let mut authors: Vec<String> = Vec::new();
+            let mut author_map: HashMap<String, usize> = HashMap::new();
+            for c in comments {
+                if !author_map.contains_key(&c.author) {
+                    let idx = authors.len();
+                    authors.push(c.author.clone());
+                    author_map.insert(c.author.clone(), idx);
+                }
+            }
+            write!(self.zip()?, "<authors>")?;
+            for author in &authors {
+                write!(self.zip()?, "<author>{}</author>", xml_escape(author))?;
+            }
+            write!(self.zip()?, "</authors><commentList>")?;
+            for c in comments {
+                let author_id = author_map.get(&c.author).copied().unwrap_or(0);
+                let escaped_cell = xml_escape(&c.cell);
+                let escaped_text = xml_escape(&c.text);
+                write!(
+                    self.zip()?,
+                    "<comment ref=\"{escaped_cell}\" authorId=\"{author_id}\">\
+                     <text><r><t>{escaped_text}</t></r></text></comment>"
+                )?;
+            }
+            write!(self.zip()?, "</commentList></comments>")?;
+        }
+
+        // Write table XML files (xl/tables/table{N}.xml)
+        for (table_idx, table) in tables.iter().enumerate() {
+            let table_num = table_idx + 1;
+            let path = format!("xl/tables/table{table_num}.xml");
+            self.zip()?.start_file(path, options)?;
+            let default_name = format!("Table{table_num}");
+            let table_name = table.name.as_deref().unwrap_or(&default_name);
+            let escaped_name = xml_escape(table_name);
+            let escaped_ref = xml_escape(&table.reference);
+            write!(
+                self.zip()?,
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+                 <table xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" \
+                 id=\"{table_num}\" name=\"{escaped_name}\" displayName=\"{escaped_name}\" \
+                 ref=\"{escaped_ref}\" totalsRowShown=\"0\">"
+            )?;
+            write!(self.zip()?, "<autoFilter ref=\"{escaped_ref}\"/>")?;
+            write!(
+                self.zip()?,
+                "<tableColumns count=\"{}\">",
+                table.columns.len()
+            )?;
+            for (col_idx, col) in table.columns.iter().enumerate() {
+                let col_id = col_idx + 1;
+                let escaped_col_name = xml_escape(&col.name);
+                write!(
+                    self.zip()?,
+                    "<tableColumn id=\"{col_id}\" name=\"{escaped_col_name}\"/>"
+                )?;
+            }
+            write!(self.zip()?, "</tableColumns>")?;
+            if let Some(ref style_name) = table.style {
+                let escaped_style = xml_escape(style_name);
+                write!(
+                    self.zip()?,
+                    "<tableStyleInfo name=\"{escaped_style}\" showFirstColumn=\"0\" showLastColumn=\"0\" showRowStripes=\"1\" showColumnStripes=\"0\"/>"
+                )?;
+            }
+            write!(self.zip()?, "</table>")?;
+        }
+
+        // Write sheet rels files (for comments, hyperlinks, tables)
+        for i in 0..self.sheets.len() {
+            let sheet_index = self.sheets[i].index;
+            let has_comments = sheet_comments.get(i).is_some_and(|c| !c.is_empty());
+            let has_hyperlinks = sheet_hyperlinks.get(i).is_some_and(|h| !h.is_empty());
+            let sheet_tables: Vec<(usize, &TableEntry)> = tables
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.sheet_index == sheet_index)
+                .collect();
+
+            if has_comments || has_hyperlinks || !sheet_tables.is_empty() {
+                let rels_path = format!("xl/worksheets/_rels/sheet{sheet_index}.xml.rels");
+                self.zip()?.start_file(rels_path, options)?;
+                write!(
+                    self.zip()?,
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+                     <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                )?;
+                let mut rel_id = 1;
+                if has_comments {
+                    let comment_num = i + 1;
+                    write!(
+                        self.zip()?,
+                        "<Relationship Id=\"rCm{rel_id}\" \
+                         Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" \
+                         Target=\"../comments{comment_num}.xml\"/>"
+                    )?;
+                    rel_id += 1;
+                }
+                if has_hyperlinks {
+                    if let Some(hls) = sheet_hyperlinks.get(i) {
+                        for (hl_idx, hl) in hls.iter().enumerate() {
+                            let r_id = format!("rHl{}", hl_idx + 1);
+                            let escaped_url = xml_escape(&hl.url);
+                            write!(
+                                self.zip()?,
+                                "<Relationship Id=\"{r_id}\" \
+                                 Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" \
+                                 Target=\"{escaped_url}\" TargetMode=\"External\"/>"
+                            )?;
+                        }
+                    }
+                    rel_id += 1;
+                }
+                let _ = rel_id; // suppress unused warning
+                for (table_idx, _) in &sheet_tables {
+                    let table_num = table_idx + 1;
+                    write!(
+                        self.zip()?,
+                        "<Relationship Id=\"rTb{table_num}\" \
+                         Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" \
+                         Target=\"../tables/table{table_num}.xml\"/>"
+                    )?;
+                }
+                write!(self.zip()?, "</Relationships>")?;
+            }
+        }
+
         // Write [Content_Types].xml
         self.zip()?.start_file("[Content_Types].xml", options)?;
         write!(
@@ -1078,6 +1486,26 @@ impl<W: Write + Seek> StreamingXlsxWriter<W> {
                 self.zip()?,
                 "<Override PartName=\"/xl/worksheets/sheet{index}.xml\" \
                  ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+            )?;
+        }
+        // Comments content types
+        for (i, comments) in sheet_comments.iter().enumerate() {
+            if !comments.is_empty() {
+                let comment_num = i + 1;
+                write!(
+                    self.zip()?,
+                    "<Override PartName=\"/xl/comments{comment_num}.xml\" \
+                     ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>"
+                )?;
+            }
+        }
+        // Table content types
+        for (table_idx, _) in tables.iter().enumerate() {
+            let table_num = table_idx + 1;
+            write!(
+                self.zip()?,
+                "<Override PartName=\"/xl/tables/table{table_num}.xml\" \
+                 ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml\"/>"
             )?;
         }
         if has_core {
@@ -1435,6 +1863,20 @@ fn write_border_side<W: Write>(
         }
     }
     Ok(())
+}
+
+/// Legacy Excel password hash algorithm for sheet protection.
+fn hash_password(password: &str) -> String {
+    let mut hash: u16 = 0;
+    for (i, byte) in password.bytes().rev().enumerate() {
+        let mut temp = byte as u16;
+        temp = (temp << (i + 1)) | (temp >> (15 - i - 1));
+        temp &= 0x7FFF;
+        hash ^= temp;
+    }
+    hash ^= password.len() as u16;
+    hash ^= 0xCE4B;
+    format!("{:04X}", hash)
 }
 
 /// Pre-computed column letter lookup table for columns 0..702 (A..ZZ).
