@@ -112,6 +112,8 @@ pub struct Sheet {
     pub auto_filter: Option<std::string::String>,
     /// Sheet visibility state: "visible", "hidden", or "veryHidden".
     pub state: std::string::String,
+    /// Data validation rules applied to cell ranges.
+    pub data_validations: Vec<crate::reader::xlsx::DataValidation>,
 }
 
 /// Convert an Excel serial number to (year, month, day, hour, minute, second, microsecond).

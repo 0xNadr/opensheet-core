@@ -185,7 +185,18 @@ fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
         };
     }
     if let Ok(f) = obj.cast::<PyFloat>() {
-        return CellValue::Number(f.value());
+        let v = f.value();
+        if v.is_nan() {
+            return CellValue::Empty;
+        }
+        if v.is_infinite() {
+            return CellValue::String(if v.is_sign_positive() {
+                "Infinity".to_string()
+            } else {
+                "-Infinity".to_string()
+            });
+        }
+        return CellValue::Number(v);
     }
     if let Ok(s) = obj.cast::<PyString>() {
         return CellValue::String(s.to_string());
@@ -209,6 +220,87 @@ fn py_to_cell(obj: &Bound<'_, PyAny>) -> CellValue {
             month: d.get_month() as u32,
             day: d.get_day() as u32,
         };
+    }
+    // --- NumPy type support ---
+    // numpy 2.x scalars are NOT subclasses of Python int/float/bool.
+    // Detect them by checking if the type's module is "numpy".
+    if let Ok(module) = obj.get_type().getattr("__module__") {
+        if let Ok(mod_str) = module.extract::<String>() {
+            if mod_str == "numpy" {
+                if let Ok(type_name) = obj.get_type().qualname() {
+                    let name = type_name.to_cow().unwrap_or_default();
+                    match name.as_ref() {
+                        // numpy.bool_ (qualname is "bool" in numpy 2.x)
+                        "bool_" | "bool" => {
+                            if let Ok(b) = obj.is_truthy() {
+                                return CellValue::Bool(b);
+                            }
+                        }
+                        // numpy integer types
+                        "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32"
+                        | "uint64" | "intp" | "uintp" | "intc" | "long" | "longlong" => {
+                            if let Ok(item) = obj.call_method0("item") {
+                                if let Ok(v) = item.extract::<i64>() {
+                                    return CellValue::Number(v as f64);
+                                }
+                            }
+                        }
+                        // numpy float types
+                        "float16" | "float32" | "float64" | "float128" | "half" | "single"
+                        | "double" => {
+                            if let Ok(item) = obj.call_method0("item") {
+                                if let Ok(v) = item.extract::<f64>() {
+                                    if v.is_nan() {
+                                        return CellValue::Empty;
+                                    }
+                                    if v.is_infinite() {
+                                        return CellValue::String(if v.is_sign_positive() {
+                                            "Infinity".to_string()
+                                        } else {
+                                            "-Infinity".to_string()
+                                        });
+                                    }
+                                    return CellValue::Number(v);
+                                }
+                            }
+                        }
+                        // numpy.datetime64
+                        "datetime64" => {
+                            if let Ok(dt_obj) = obj.call_method0("item") {
+                                if let Ok(dt) = dt_obj.cast::<PyDateTime>() {
+                                    return CellValue::DateTime {
+                                        year: dt.get_year(),
+                                        month: dt.get_month() as u32,
+                                        day: dt.get_day() as u32,
+                                        hour: dt.get_hour() as u32,
+                                        minute: dt.get_minute() as u32,
+                                        second: dt.get_second() as u32,
+                                        microsecond: dt.get_microsecond(),
+                                    };
+                                }
+                                if let Ok(d) = dt_obj.cast::<PyDate>() {
+                                    return CellValue::Date {
+                                        year: d.get_year(),
+                                        month: d.get_month() as u32,
+                                        day: d.get_day() as u32,
+                                    };
+                                }
+                            }
+                        }
+                        // numpy string types
+                        "str_" | "bytes_" => {
+                            return CellValue::String(obj.to_string());
+                        }
+                        _ => {
+                            // Unknown numpy type — try generic conversion via .item()
+                            if let Ok(item) = obj.call_method0("item") {
+                                return py_to_cell(&item);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     // --- Rare wrapper types last ---
     if let Ok(sc) = obj.extract::<PyRef<'_, StyledCell>>() {
@@ -362,6 +454,51 @@ fn read_xlsx(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
         // Sheet visibility state
         dict.set_item("state", &sheet.state)?;
 
+        // Data validations
+        let dv_list = PyList::empty(py);
+        for dv in &sheet.data_validations {
+            let dv_dict = PyDict::new(py);
+            dv_dict.set_item("type", &dv.validation_type)?;
+            dv_dict.set_item("sqref", &dv.sqref)?;
+            match &dv.operator {
+                Some(op) => dv_dict.set_item("operator", op)?,
+                None => dv_dict.set_item("operator", py.None())?,
+            }
+            match &dv.formula1 {
+                Some(f) => dv_dict.set_item("formula1", f)?,
+                None => dv_dict.set_item("formula1", py.None())?,
+            }
+            match &dv.formula2 {
+                Some(f) => dv_dict.set_item("formula2", f)?,
+                None => dv_dict.set_item("formula2", py.None())?,
+            }
+            dv_dict.set_item("allow_blank", dv.allow_blank)?;
+            dv_dict.set_item("show_input_message", dv.show_input_message)?;
+            dv_dict.set_item("show_error_message", dv.show_error_message)?;
+            match &dv.prompt_title {
+                Some(t) => dv_dict.set_item("prompt_title", t)?,
+                None => dv_dict.set_item("prompt_title", py.None())?,
+            }
+            match &dv.prompt {
+                Some(p) => dv_dict.set_item("prompt", p)?,
+                None => dv_dict.set_item("prompt", py.None())?,
+            }
+            match &dv.error_title {
+                Some(t) => dv_dict.set_item("error_title", t)?,
+                None => dv_dict.set_item("error_title", py.None())?,
+            }
+            match &dv.error_message {
+                Some(m) => dv_dict.set_item("error_message", m)?,
+                None => dv_dict.set_item("error_message", py.None())?,
+            }
+            match &dv.error_style {
+                Some(s) => dv_dict.set_item("error_style", s)?,
+                None => dv_dict.set_item("error_style", py.None())?,
+            }
+            dv_list.append(dv_dict)?;
+        }
+        dict.set_item("data_validations", dv_list)?;
+
         result.append(dict)?;
     }
 
@@ -392,6 +529,62 @@ fn defined_names(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
         }
         result.append(dict)?;
     }
+
+    Ok(result.into_any().unbind())
+}
+
+/// Read document properties from an XLSX file.
+///
+/// Returns a dict with:
+///   - "core": dict of core properties (title, subject, creator, etc.)
+///   - "custom": list of dicts with "name" and "value" keys
+#[pyfunction]
+fn document_properties(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+    let file = File::open(path)
+        .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("{path}: {e}")))?;
+    let reader = BufReader::new(file);
+    let (core, custom) = reader::xlsx::read_document_properties(reader)?;
+
+    let result = PyDict::new(py);
+
+    let core_dict = PyDict::new(py);
+    if let Some(ref v) = core.title {
+        core_dict.set_item("title", v)?;
+    }
+    if let Some(ref v) = core.subject {
+        core_dict.set_item("subject", v)?;
+    }
+    if let Some(ref v) = core.creator {
+        core_dict.set_item("creator", v)?;
+    }
+    if let Some(ref v) = core.keywords {
+        core_dict.set_item("keywords", v)?;
+    }
+    if let Some(ref v) = core.description {
+        core_dict.set_item("description", v)?;
+    }
+    if let Some(ref v) = core.last_modified_by {
+        core_dict.set_item("last_modified_by", v)?;
+    }
+    if let Some(ref v) = core.category {
+        core_dict.set_item("category", v)?;
+    }
+    if let Some(ref v) = core.created {
+        core_dict.set_item("created", v)?;
+    }
+    if let Some(ref v) = core.modified {
+        core_dict.set_item("modified", v)?;
+    }
+    result.set_item("core", core_dict)?;
+
+    let custom_list = PyList::empty(py);
+    for prop in custom {
+        let d = PyDict::new(py);
+        d.set_item("name", &prop.name)?;
+        d.set_item("value", &prop.value)?;
+        custom_list.append(d)?;
+    }
+    result.set_item("custom", custom_list)?;
 
     Ok(result.into_any().unbind())
 }
@@ -827,6 +1020,81 @@ impl XlsxWriter {
         Ok(())
     }
 
+    /// Set a core document property (title, subject, creator, etc.).
+    fn set_document_property(&mut self, key: &str, value: &str) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.set_document_property(key, value)?;
+        Ok(())
+    }
+
+    /// Set a custom document property (arbitrary key-value pair).
+    fn set_custom_property(&mut self, name: &str, value: &str) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.set_custom_property(name, value)?;
+        Ok(())
+    }
+
+    /// Add a data validation rule to the current sheet.
+    #[pyo3(signature = (
+        validation_type,
+        sqref,
+        formula1=None,
+        formula2=None,
+        operator=None,
+        allow_blank=false,
+        show_input_message=false,
+        show_error_message=false,
+        prompt_title=None,
+        prompt=None,
+        error_title=None,
+        error_message=None,
+        error_style=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_data_validation(
+        &mut self,
+        validation_type: &str,
+        sqref: &str,
+        formula1: Option<&str>,
+        formula2: Option<&str>,
+        operator: Option<&str>,
+        allow_blank: bool,
+        show_input_message: bool,
+        show_error_message: bool,
+        prompt_title: Option<&str>,
+        prompt: Option<&str>,
+        error_title: Option<&str>,
+        error_message: Option<&str>,
+        error_style: Option<&str>,
+    ) -> PyResult<()> {
+        let w = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Writer is already closed"))?;
+        w.add_data_validation(
+            validation_type,
+            sqref,
+            formula1,
+            formula2,
+            operator,
+            allow_blank,
+            show_input_message,
+            show_error_message,
+            prompt_title,
+            prompt,
+            error_title,
+            error_message,
+            error_style,
+        )?;
+        Ok(())
+    }
+
     /// Freeze the top `row` rows and left `col` columns.
     ///
     /// Must be called after add_sheet() but before any write_row() calls on that sheet.
@@ -954,6 +1222,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_sheet, m)?)?;
     m.add_function(wrap_pyfunction!(sheet_names, m)?)?;
     m.add_function(wrap_pyfunction!(defined_names, m)?)?;
+    m.add_function(wrap_pyfunction!(document_properties, m)?)?;
     m.add_class::<XlsxWriter>()?;
     m.add_class::<Formula>()?;
     m.add_class::<FormattedCell>()?;

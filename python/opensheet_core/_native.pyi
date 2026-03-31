@@ -47,6 +47,16 @@ def defined_names(path: str) -> list[dict[str, Any]]:
     """
     ...
 
+def document_properties(path: str) -> dict[str, Any]:
+    """Read document properties from an XLSX file.
+
+    Returns a dict with:
+      - ``"core"``: dict of core properties (title, subject, creator, keywords,
+        description, last_modified_by, category, created, modified)
+      - ``"custom"``: list of dicts with ``"name"`` and ``"value"`` keys
+    """
+    ...
+
 class XlsxWriter:
     """Streaming XLSX writer.
 
@@ -103,6 +113,43 @@ class XlsxWriter:
             value: The reference (e.g. ``"Sheet1!$B$2"``).
             sheet_index: If provided, the name is scoped to that sheet (0-based).
                 If None (default), the name is workbook-scoped.
+        """
+        ...
+    def set_document_property(self, key: str, value: str) -> None:
+        """Set a core document property.
+
+        Valid keys: ``"title"``, ``"subject"``, ``"creator"``, ``"keywords"``,
+        ``"description"``, ``"last_modified_by"``, ``"category"``.
+        """
+        ...
+    def set_custom_property(self, name: str, value: str) -> None:
+        """Set a custom document property (arbitrary key-value pair)."""
+        ...
+    def add_data_validation(
+        self,
+        validation_type: str,
+        sqref: str,
+        formula1: str | None = None,
+        formula2: str | None = None,
+        operator: str | None = None,
+        allow_blank: bool = False,
+        show_input_message: bool = False,
+        show_error_message: bool = False,
+        prompt_title: str | None = None,
+        prompt: str | None = None,
+        error_title: str | None = None,
+        error_message: str | None = None,
+        error_style: str | None = None,
+    ) -> None:
+        """Add a data validation rule to the current sheet.
+
+        Args:
+            validation_type: One of ``"list"``, ``"whole"``, ``"decimal"``,
+                ``"date"``, ``"time"``, ``"textLength"``, ``"custom"``.
+            sqref: Cell range (e.g. ``"A1:A100"``).
+            formula1: First formula/value (e.g. ``'"Option1,Option2"'`` for list).
+            formula2: Second formula/value (for between/notBetween operators).
+            operator: Comparison operator (e.g. ``"between"``, ``"greaterThan"``).
         """
         ...
     def freeze_panes(self, row: int = 0, col: int = 0) -> None:
