@@ -2064,10 +2064,10 @@ fn parse_comments_for_sheet<R: Read + Seek>(
     };
 
     // Resolve the path (relative to xl/worksheets/)
-    let comments_path = if comments_target.starts_with('/') {
-        comments_target[1..].to_string()
-    } else if comments_target.starts_with("../") {
-        format!("xl/{}", &comments_target[3..])
+    let comments_path = if let Some(stripped) = comments_target.strip_prefix('/') {
+        stripped.to_string()
+    } else if let Some(stripped) = comments_target.strip_prefix("../") {
+        format!("xl/{stripped}")
     } else {
         format!("xl/worksheets/{comments_target}")
     };
@@ -2217,10 +2217,10 @@ fn parse_tables_for_sheet<R: Read + Seek>(
 
     let mut tables = Vec::new();
     for rel in table_rels {
-        let table_path = if rel.target.starts_with('/') {
-            rel.target[1..].to_string()
-        } else if rel.target.starts_with("../") {
-            format!("xl/{}", &rel.target[3..])
+        let table_path = if let Some(stripped) = rel.target.strip_prefix('/') {
+            stripped.to_string()
+        } else if let Some(stripped) = rel.target.strip_prefix("../") {
+            format!("xl/{stripped}")
         } else {
             format!("xl/worksheets/{}", &rel.target)
         };
