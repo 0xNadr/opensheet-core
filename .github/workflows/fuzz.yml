@@ -1,0 +1,60 @@
+name: Fuzz
+
+on:
+  # Run on-demand
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Fuzz duration in seconds per target"
+        required: false
+        default: "300"
+  # Weekly scheduled run
+  schedule:
+    - cron: "0 3 * * 1"  # Every Monday at 03:00 UTC
+  # Also run on PRs that touch the reader
+  pull_request:
+    paths:
+      - "src/reader/**"
+      - "fuzz/**"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_read_xlsx
+          - fuzz_read_single_sheet
+          - fuzz_read_sheet_names
+          - fuzz_read_document_properties
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Cache fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run fuzzer
+        run: |
+          DURATION=${{ github.event.inputs.duration || '60' }}
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=$DURATION \
+            -max_len=65536
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}

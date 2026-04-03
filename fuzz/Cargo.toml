@@ -1,0 +1,40 @@
+[package]
+name = "opensheet-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.opensheet-core]
+path = ".."
+default-features = false
+
+# --- Fuzz targets ---------------------------------------------------
+
+[[bin]]
+name = "fuzz_read_xlsx"
+path = "fuzz_targets/fuzz_read_xlsx.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_read_single_sheet"
+path = "fuzz_targets/fuzz_read_single_sheet.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_read_sheet_names"
+path = "fuzz_targets/fuzz_read_sheet_names.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_read_document_properties"
+path = "fuzz_targets/fuzz_read_document_properties.rs"
+doc = false
+
+[workspace]
+members = ["."]
