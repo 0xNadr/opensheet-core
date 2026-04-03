@@ -6,9 +6,9 @@ use pyo3::types::{
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-mod reader;
-mod types;
-mod writer;
+pub mod reader;
+pub mod types;
+pub mod writer;
 
 use types::CellValue;
 use writer::xlsx::StreamingXlsxWriter;

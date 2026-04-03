@@ -25,6 +25,10 @@ env/
 *.swp
 *.swo
 
+# Fuzzing artifacts (keep seed corpus, ignore runtime output)
+fuzz/artifacts/
+fuzz/corpus/
+
 # OS
 .DS_Store
 Thumbs.db
